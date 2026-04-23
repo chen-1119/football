@@ -2050,6 +2050,186 @@ function renderMatchCard(match) {
   `;
 }
 
+function isResultMatch(match) {
+  if (!match || match.status !== "RESULT") return false;
+  const h = Number(match?.score?.fullTime?.home);
+  const a = Number(match?.score?.fullTime?.away);
+  return Number.isFinite(h) && Number.isFinite(a);
+}
+
+function outcomeByScore(match) {
+  if (!isResultMatch(match)) return null;
+  const h = Number(match.score.fullTime.home);
+  const a = Number(match.score.fullTime.away);
+  if (h > a) return "home";
+  if (h < a) return "away";
+  return "draw";
+}
+
+function outcomeByProbabilities(probabilities) {
+  const p = probabilities || {};
+  const home = Number(p.home || 0);
+  const draw = Number(p.draw || 0);
+  const away = Number(p.away || 0);
+  if (home >= draw && home >= away) return "home";
+  if (away >= home && away >= draw) return "away";
+  return "draw";
+}
+
+function outcomeLabelByKey(key) {
+  if (key === "home") return "主胜";
+  if (key === "away") return "客胜";
+  if (key === "draw") return "平局";
+  return "待定";
+}
+
+function trendTextFromForm(formArr = []) {
+  const arr = Array.isArray(formArr) ? formArr : [];
+  let w = 0;
+  let d = 0;
+  let l = 0;
+  for (const x of arr) {
+    if (x === "W") w += 1;
+    if (x === "D") d += 1;
+    if (x === "L") l += 1;
+  }
+  const streak = [];
+  for (const x of arr) {
+    if (x !== "W" && x !== "D" && x !== "L") break;
+    if (!streak.length || streak[0] === x) streak.unshift(x);
+    else break;
+  }
+  const streakText = streak.length ? `，当前${streak.length}连${streak[0] === "W" ? "胜" : streak[0] === "L" ? "负" : "平"}` : "";
+  return `${arr.length}场: ${w}胜${d}平${l}负${streakText}`;
+}
+
+function computeGlobalPredictionHit(windowSize = 200) {
+  const finished = [...state.matches]
+    .filter(isResultMatch)
+    .sort((a, b) => new Date(b.datetime) - new Date(a.datetime))
+    .slice(0, windowSize);
+
+  let total = 0;
+  let hit1x2 = 0;
+  let hitO25 = 0;
+  let hitBtts = 0;
+
+  for (const match of finished) {
+    const analysis = normalizeAnalysis(state.analysisById[match.id]);
+    const m = derivedMetrics(match, analysis);
+    const actual = outcomeByScore(match);
+    const predicted = outcomeByProbabilities(analysis?.prediction?.probabilities);
+    if (!actual) continue;
+    total += 1;
+    if (predicted === actual) hit1x2 += 1;
+
+    const hs = Number(match?.score?.fullTime?.home || 0);
+    const as = Number(match?.score?.fullTime?.away || 0);
+    const actualOver25 = hs + as >= 3;
+    const actualBtts = hs > 0 && as > 0;
+    const predOver25 = Number(m.o25 || 0) >= 0.5;
+    const predBtts = Number(m.btts || 0) >= 0.5;
+    if (predOver25 === actualOver25) hitO25 += 1;
+    if (predBtts === actualBtts) hitBtts += 1;
+  }
+
+  const rate = (n) => (total > 0 ? `${Math.round((n / total) * 100)}%` : "--");
+  return {
+    sample: total,
+    hit1x2,
+    hitO25,
+    hitBtts,
+    rate1x2: rate(hit1x2),
+    rateO25: rate(hitO25),
+    rateBtts: rate(hitBtts),
+  };
+}
+
+function renderPreMatchPanel(match, analysis) {
+  const probs = analysis?.prediction?.probabilities || {};
+  const d = derivedMetrics(match, analysis);
+  const predictedOutcome = outcomeByProbabilities(probs);
+  const scoreTop = (analysis?.prediction?.scoreMatrix || []).slice(0, 3);
+  const scoresText = scoreTop.length
+    ? scoreTop.map((x) => `${x.score}(${pct(Number(x.probability || 0))})`).join(" / ")
+    : "暂无";
+  const analysisText = analysis?.market?.psychology?.analysisText || "暂无赛前解读";
+  const tacticalText = analysis?.context?.tactical?.matchup || "暂无战术对位说明";
+
+  return `
+    <section class="soft-panel panel-blue">
+      <div class="section-head"><h3>赛前预测总览</h3><span class="muted">开赛前模型估计</span></div>
+      <div class="mini-grid">
+        <article class="mini-data"><span>胜平负概率</span><strong>主 ${pct(Number(probs.home || 0))} / 平 ${pct(Number(probs.draw || 0))} / 客 ${pct(Number(probs.away || 0))}</strong></article>
+        <article class="mini-data"><span>倾向结果</span><strong>${outcomeLabelByKey(predictedOutcome)}</strong></article>
+        <article class="mini-data"><span>比分预估</span><strong>${analysis?.prediction?.conclusion?.predictedScore || "-"}</strong></article>
+        <article class="mini-data"><span>大小球（2.5）</span><strong>大 ${Math.round((Number(d.o25 || 0)) * 100)}% / 小 ${Math.round((1 - Number(d.o25 || 0)) * 100)}%</strong></article>
+        <article class="mini-data"><span>双方进球（BTTS）</span><strong>${Math.round((Number(d.btts || 0)) * 100)}%</strong></article>
+        <article class="mini-data"><span>候选比分Top3</span><strong>${scoresText}</strong></article>
+      </div>
+      <div class="two-col">
+        <article class="mini-data"><span>赛前分析</span><p>${analysisText}</p></article>
+        <article class="mini-data"><span>战术对位</span><p>${tacticalText}</p></article>
+      </div>
+    </section>
+  `;
+}
+
+function renderPostMatchPanel(match, analysis) {
+  if (!isResultMatch(match)) {
+    return `
+      <section class="soft-panel panel-cream">
+        <div class="section-head"><h3>赛后复盘</h3><span class="muted">完场后自动生成</span></div>
+        <p class="muted">当前状态：${statusLabel(match)}。完场后将展示胜负趋势、预测命中率和复盘结论。</p>
+      </section>
+    `;
+  }
+
+  const probs = analysis?.prediction?.probabilities || {};
+  const predictedOutcome = outcomeByProbabilities(probs);
+  const actualOutcome = outcomeByScore(match);
+  const actualScore = scoreText(match);
+  const predictedScore = analysis?.prediction?.conclusion?.predictedScore || "-";
+  const predictedScoreHit = predictedScore === actualScore;
+
+  const d = derivedMetrics(match, analysis);
+  const hs = Number(match?.score?.fullTime?.home || 0);
+  const as = Number(match?.score?.fullTime?.away || 0);
+  const total = hs + as;
+  const actualOver25 = total >= 3;
+  const actualBtts = hs > 0 && as > 0;
+  const predOver25 = Number(d.o25 || 0) >= 0.5;
+  const predBtts = Number(d.btts || 0) >= 0.5;
+
+  const homeTrend = trendTextFromForm(analysis?.fundamentals?.history?.recentForm?.home || []);
+  const awayTrend = trendTextFromForm(analysis?.fundamentals?.history?.recentForm?.away || []);
+  const global = computeGlobalPredictionHit(200);
+
+  const hitText = (ok) => (ok ? "命中" : "未命中");
+  return `
+    <section class="soft-panel panel-cream">
+      <div class="section-head"><h3>赛后复盘</h3><span class="muted">基于真实完场赛果</span></div>
+      <div class="mini-grid">
+        <article class="mini-data"><span>赛果</span><strong>${actualScore}（${outcomeLabelByKey(actualOutcome)}）</strong></article>
+        <article class="mini-data"><span>预测结果</span><strong>${outcomeLabelByKey(predictedOutcome)}（${hitText(predictedOutcome === actualOutcome)}）</strong></article>
+        <article class="mini-data"><span>预测比分</span><strong>${predictedScore}（${hitText(predictedScoreHit)}）</strong></article>
+        <article class="mini-data"><span>大小球(2.5)</span><strong>${actualOver25 ? "大球" : "小球"}（${hitText(predOver25 === actualOver25)}）</strong></article>
+        <article class="mini-data"><span>BTTS</span><strong>${actualBtts ? "是" : "否"}（${hitText(predBtts === actualBtts)}）</strong></article>
+        <article class="mini-data"><span>总进球</span><strong>${total} 球</strong></article>
+      </div>
+      <div class="two-col">
+        <article class="mini-data"><span>${match.home?.name || "主队"}胜负趋势</span><p>${homeTrend}</p></article>
+        <article class="mini-data"><span>${match.away?.name || "客队"}胜负趋势</span><p>${awayTrend}</p></article>
+      </div>
+      <div class="mini-grid">
+        <article class="mini-data"><span>全局1X2命中率</span><strong>${global.rate1x2}</strong><p>近${global.sample}场，命中${global.hit1x2}场</p></article>
+        <article class="mini-data"><span>全局大/小2.5命中率</span><strong>${global.rateO25}</strong><p>近${global.sample}场，命中${global.hitO25}场</p></article>
+        <article class="mini-data"><span>全局BTTS命中率</span><strong>${global.rateBtts}</strong><p>近${global.sample}场，命中${global.hitBtts}场</p></article>
+      </div>
+    </section>
+  `;
+}
+
 function renderAnalysisPage() {
   const match = getMatchById(state.selectedMatchId);
   if (!match) return '<section class="soft-panel"><p class="empty-tip">未找到比赛详情，请返回列表重新选择。</p></section>';
@@ -2084,6 +2264,9 @@ function renderAnalysisPage() {
       </div>
       ${statusLine()}
     </section>
+
+    ${renderPreMatchPanel(match, analysis)}
+    ${renderPostMatchPanel(match, analysis)}
 
     <section class="soft-panel panel-lavender">
       <div class="tab-row">
