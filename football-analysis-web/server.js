@@ -193,6 +193,7 @@ let insertSnapshotStmt = null;
 let searchHistoryCountStmt = null;
 let searchHistoryRowsStmt = null;
 let searchTimelineStmt = null;
+let selectLatestByIdStmt = null;
 
 function normText(value, fallback = "") {
   if (value === null || value === undefined) return fallback;
@@ -445,6 +446,38 @@ function initDatabase() {
     WHERE match_id = ?
     ORDER BY datetime(snapshot_at) DESC
     LIMIT ?
+  `);
+
+  selectLatestByIdStmt = db.prepare(`
+    SELECT
+      match_id AS id,
+      source_id AS sourceId,
+      source_method AS sourceMethod,
+      league_code AS leagueCode,
+      league,
+      competition,
+      match_num_str AS matchNumStr,
+      round_text AS round,
+      match_time AS datetime,
+      status,
+      status_code AS statusCode,
+      status_name AS statusName,
+      home_team_id AS homeTeamId,
+      home_name AS homeName,
+      home_short AS homeShort,
+      away_team_id AS awayTeamId,
+      away_name AS awayName,
+      away_short AS awayShort,
+      venue,
+      city,
+      odds_home AS oddsHome,
+      odds_draw AS oddsDraw,
+      odds_away AS oddsAway,
+      score_home AS scoreHome,
+      score_away AS scoreAway
+    FROM match_latest
+    WHERE match_id = ?
+    LIMIT 1
   `);
 }
 
@@ -1487,6 +1520,145 @@ function filterMatches({ league, status }) {
   });
 }
 
+function matchTimestamp(match) {
+  const t = Date.parse(match?.datetime || "");
+  return Number.isFinite(t) ? t : 0;
+}
+
+function isResultWithScore(match) {
+  return (
+    match?.status === "RESULT" &&
+    Number.isFinite(Number(match?.score?.fullTime?.home)) &&
+    Number.isFinite(Number(match?.score?.fullTime?.away))
+  );
+}
+
+function teamResultView(match, teamId) {
+  const isHome = String(match?.home?.id || "") === String(teamId || "");
+  const gf = Number(isHome ? match?.score?.fullTime?.home : match?.score?.fullTime?.away);
+  const ga = Number(isHome ? match?.score?.fullTime?.away : match?.score?.fullTime?.home);
+  let result = "D";
+  if (gf > ga) result = "W";
+  if (gf < ga) result = "L";
+  return { gf, ga, result };
+}
+
+function teamRecentStats(teamId, limit = 10) {
+  const list = cache.matches
+    .filter(
+      (m) =>
+        isResultWithScore(m) &&
+        (String(m?.home?.id || "") === String(teamId || "") || String(m?.away?.id || "") === String(teamId || ""))
+    )
+    .sort((a, b) => matchTimestamp(b) - matchTimestamp(a))
+    .slice(0, Math.max(1, limit));
+
+  let w = 0;
+  let d = 0;
+  let l = 0;
+  let gf = 0;
+  let ga = 0;
+  const form = [];
+  list.forEach((m) => {
+    const view = teamResultView(m, teamId);
+    gf += view.gf;
+    ga += view.ga;
+    form.push(view.result);
+    if (view.result === "W") w += 1;
+    if (view.result === "D") d += 1;
+    if (view.result === "L") l += 1;
+  });
+  return {
+    form5: form.slice(0, 5),
+    form10: form.slice(0, 10),
+    w,
+    d,
+    l,
+    gf,
+    ga,
+    points: w * 3 + d,
+    sample: list.length,
+  };
+}
+
+function h2hStats(homeId, awayId, limit = 6) {
+  const list = cache.matches
+    .filter((m) => {
+      if (!isResultWithScore(m)) return false;
+      const h = String(m?.home?.id || "");
+      const a = String(m?.away?.id || "");
+      const home = String(homeId || "");
+      const away = String(awayId || "");
+      return (h === home && a === away) || (h === away && a === home);
+    })
+    .sort((a, b) => matchTimestamp(b) - matchTimestamp(a))
+    .slice(0, Math.max(1, limit));
+
+  let homeWin = 0;
+  let draw = 0;
+  let awayWin = 0;
+  list.forEach((m) => {
+    const hs = Number(m?.score?.fullTime?.home);
+    const as = Number(m?.score?.fullTime?.away);
+    if (!Number.isFinite(hs) || !Number.isFinite(as)) return;
+    const homeIsRealHome = String(m?.home?.id || "") === String(homeId || "");
+    const homeGoals = homeIsRealHome ? hs : as;
+    const awayGoals = homeIsRealHome ? as : hs;
+    if (homeGoals > awayGoals) homeWin += 1;
+    else if (homeGoals < awayGoals) awayWin += 1;
+    else draw += 1;
+  });
+  return { homeWin, draw, awayWin, sample: list.length };
+}
+
+function enrichAnalysisForMatch(match, baseAnalysis) {
+  const analysis = JSON.parse(JSON.stringify(baseAnalysis || {}));
+  const homeStats = teamRecentStats(match?.home?.id, 10);
+  const awayStats = teamRecentStats(match?.away?.id, 10);
+  const h2h = h2hStats(match?.home?.id, match?.away?.id, 6);
+
+  if (!analysis.fundamentals) analysis.fundamentals = {};
+  if (!analysis.fundamentals.history) analysis.fundamentals.history = {};
+  if (!analysis.fundamentals.history.recentForm) analysis.fundamentals.history.recentForm = {};
+  if (!analysis.fundamentals.history.standing) analysis.fundamentals.history.standing = {};
+
+  analysis.fundamentals.history.recentForm.home = homeStats.form5.length ? homeStats.form5 : ["-", "-", "-", "-", "-"];
+  analysis.fundamentals.history.recentForm.away = awayStats.form5.length ? awayStats.form5 : ["-", "-", "-", "-", "-"];
+  analysis.fundamentals.history.standing.home = {
+    rank: `近10场${homeStats.sample}场`,
+    points: homeStats.points,
+    goalDiff: homeStats.gf - homeStats.ga,
+    record: `${homeStats.w}-${homeStats.d}-${homeStats.l}`,
+    gf: homeStats.gf,
+    ga: homeStats.ga,
+  };
+  analysis.fundamentals.history.standing.away = {
+    rank: `近10场${awayStats.sample}场`,
+    points: awayStats.points,
+    goalDiff: awayStats.gf - awayStats.ga,
+    record: `${awayStats.w}-${awayStats.d}-${awayStats.l}`,
+    gf: awayStats.gf,
+    ga: awayStats.ga,
+  };
+
+  if (!analysis.context) analysis.context = {};
+  if (!analysis.context.h2h) analysis.context.h2h = {};
+  analysis.context.h2h.last5 = {
+    homeWin: h2h.homeWin,
+    draw: h2h.draw,
+    awayWin: h2h.awayWin,
+  };
+  analysis.context.h2h.note =
+    h2h.sample > 0
+      ? `近${h2h.sample}次交锋：主队${h2h.homeWin}胜，平${h2h.draw}场，客队${h2h.awayWin}胜。`
+      : "暂无可用的双方历史交锋样本。";
+
+  if (!analysis.market) analysis.market = {};
+  if (!analysis.market.psychology) analysis.market.psychology = {};
+  analysis.market.psychology.analysisText = `近况对比：${match?.home?.name || "主队"}近10场${homeStats.w}胜${homeStats.d}平${homeStats.l}负，${match?.away?.name || "客队"}近10场${awayStats.w}胜${awayStats.d}平${awayStats.l}负。`;
+  return analysis;
+}
+
 function buildCoveragePayload() {
   const byStatus = cache.matches.reduce((acc, match) => {
     const key = match.status || "UNKNOWN";
@@ -1689,12 +1861,36 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && urlObj.pathname.startsWith("/api/matches/") && urlObj.pathname.endsWith("/analysis")) {
       const id = decodeURIComponent(urlObj.pathname.replace("/api/matches/", "").replace("/analysis", ""));
-      const analysis = cache.analysisById[id];
+      const fromCache = cache.matches.find((m) => m.id === id) || null;
+      let match = fromCache;
+      if (!match && db && selectLatestByIdStmt) {
+        const row = selectLatestByIdStmt.get(id);
+        if (row) {
+          match = mapDbSearchRow(row);
+        }
+      }
+
+      if (!match) {
+        json(res, 404, { ok: false, error: "match_not_found", id });
+        return;
+      }
+
+      let analysis = cache.analysisById[id];
       if (!analysis) {
+        analysis = buildAnalysisFromSporttery(match, {});
+      }
+
+      const enriched = enrichAnalysisForMatch(match, analysis);
+      cache.analysisById[id] = enriched;
+      if (!fromCache) {
+        cache.matches.push(match);
+      }
+
+      if (!enriched) {
         json(res, 404, { ok: false, error: "analysis_not_found", id });
         return;
       }
-      json(res, 200, { ok: true, id, analysis });
+      json(res, 200, { ok: true, id, analysis: enriched });
       return;
     }
 

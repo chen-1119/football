@@ -2132,3 +2132,38 @@ document.addEventListener("change", (event) => {
     render();
   }
 });
+
+const __renderAnalysisContentBase = renderAnalysisContent;
+renderAnalysisContent = function patchedRenderAnalysisContent(analysis, match) {
+  if (state.mainTab === "fundamentals" && state.subTabs.fundamentals === "history") {
+    const homeStanding = analysis?.fundamentals?.history?.standing?.home || {};
+    const awayStanding = analysis?.fundamentals?.history?.standing?.away || {};
+    const homeForm = analysis?.fundamentals?.history?.recentForm?.home || [];
+    const awayForm = analysis?.fundamentals?.history?.recentForm?.away || [];
+    const h2hNote = analysis?.context?.h2h?.note || "暂无可用交锋数据";
+
+    return `
+      <section class="analysis-card">
+        <h3>历史表现（近10场）</h3>
+        <div class="two-col">
+          <div>
+            <p class="muted">${match.home.name}</p>
+            <div class="form-track">${formDots(homeForm)}</div>
+          </div>
+          <div>
+            <p class="muted">${match.away.name}</p>
+            <div class="form-track">${formDots(awayForm)}</div>
+          </div>
+        </div>
+        <div class="mini-grid">
+          <article class="mini-data"><span>近10场积分</span><strong>${homeStanding.points ?? "-"} / ${awayStanding.points ?? "-"}</strong></article>
+          <article class="mini-data"><span>近10场净胜球</span><strong>${homeStanding.goalDiff ?? "-"} / ${awayStanding.goalDiff ?? "-"}</strong></article>
+          <article class="mini-data"><span>近10场胜平负</span><strong>${homeStanding.record ?? "-"} / ${awayStanding.record ?? "-"}</strong></article>
+          <article class="mini-data"><span>近10场进失球</span><strong>${homeStanding.gf ?? "-"}:${homeStanding.ga ?? "-"} / ${awayStanding.gf ?? "-"}:${awayStanding.ga ?? "-"}</strong></article>
+        </div>
+        <p class="muted" style="margin-top:10px;">${h2hNote}</p>
+      </section>
+    `;
+  }
+  return __renderAnalysisContentBase(analysis, match);
+};

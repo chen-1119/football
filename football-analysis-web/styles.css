@@ -763,6 +763,19 @@ input,
   background: rgba(19, 34, 67, 0.26);
 }
 
+.analysis-hero .mini-data {
+  background: rgba(13, 28, 58, 0.62);
+  border: 1px solid rgba(202, 218, 255, 0.28);
+}
+
+.analysis-hero .mini-data span {
+  color: #cfe0ff;
+}
+
+.analysis-hero .mini-data strong {
+  color: #f4f8ff;
+}
+
 .kpi-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
