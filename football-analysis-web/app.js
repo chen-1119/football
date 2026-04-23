@@ -1801,3 +1801,334 @@ async function bootstrap() {
 }
 
 bootstrap();
+
+// ---- 2026-04-23 hotfix: home-date query + detail fallback ----
+function toInputDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function todayInputDate() {
+  return toInputDate(new Date());
+}
+
+function ensureHomeState() {
+  if (!state.homeDate) state.homeDate = todayInputDate();
+  if (!Array.isArray(state.homeRows)) state.homeRows = [];
+  if (!state.homeQueriedDate) state.homeQueriedDate = state.homeDate;
+  if (!Number.isFinite(state.homeTotal)) state.homeTotal = 0;
+  if (typeof state.homeLoading !== "boolean") state.homeLoading = false;
+}
+
+function normalizeMatchRow(row) {
+  if (!row || !row.id) return null;
+  return {
+    ...row,
+    home: row.home || { name: "主队", short: "HOM" },
+    away: row.away || { name: "客队", short: "AWY" },
+    score: row.score || { fullTime: { home: null, away: null } },
+    odds: row.odds || { oneXTwo: { home: null, draw: null, away: null } },
+  };
+}
+
+function mergeMatchesIntoState(rows) {
+  if (!Array.isArray(rows) || !rows.length) return;
+  const map = new Map(state.matches.map((m) => [m.id, m]));
+  rows.forEach((row) => {
+    const normalized = normalizeMatchRow(row);
+    if (!normalized) return;
+    map.set(normalized.id, { ...(map.get(normalized.id) || {}), ...normalized });
+  });
+  state.matches = Array.from(map.values()).sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+}
+
+function getMatchById(id) {
+  if (!id) return null;
+  const main = state.matches.find((m) => m.id === id);
+  if (main) return main;
+
+  const fromSearch = (state.searchResults || []).find((m) => m.id === id);
+  if (fromSearch) {
+    mergeMatchesIntoState([fromSearch]);
+    return state.matches.find((m) => m.id === id) || normalizeMatchRow(fromSearch);
+  }
+
+  const fromHome = (state.homeRows || []).find((m) => m.id === id);
+  if (fromHome) {
+    mergeMatchesIntoState([fromHome]);
+    return state.matches.find((m) => m.id === id) || normalizeMatchRow(fromHome);
+  }
+  return null;
+}
+
+async function runHistorySearch(page = 1) {
+  state.searchLoading = true;
+  state.searchPage = Math.max(1, page);
+  render();
+  try {
+    const params = new URLSearchParams({
+      q: state.searchQuery || "",
+      status: state.searchStatus === "ALL" ? "" : state.searchStatus,
+      dateFrom: state.searchDateFrom || "",
+      dateTo: state.searchDateTo || "",
+      page: String(state.searchPage),
+      pageSize: String(SEARCH_PAGE_SIZE),
+    });
+    const payload = await fetchJson(`/api/history/search?${params.toString()}`);
+    if (payload.ok) {
+      state.searchResults = Array.isArray(payload.rows) ? payload.rows : [];
+      state.searchTotal = Number(payload.total || 0);
+      state.searchTotalPages = Number(payload.totalPages || 0);
+      state.updatedAt = payload.updatedAt || state.updatedAt;
+      state.source = payload.source || state.source;
+      mergeMatchesIntoState(state.searchResults);
+    }
+  } catch {
+    state.searchResults = [];
+    state.searchTotal = 0;
+    state.searchTotalPages = 0;
+  } finally {
+    state.searchLoading = false;
+    render();
+  }
+}
+
+async function runHomeDateSearch() {
+  ensureHomeState();
+  const selected = state.homeDate || todayInputDate();
+  const today = todayInputDate();
+  if (selected === today) {
+    state.homeQueriedDate = selected;
+    state.homeRows = [];
+    state.homeTotal = state.matches.filter((m) => toInputDate(m.datetime) === selected).length;
+    render();
+    return;
+  }
+
+  state.homeLoading = true;
+  render();
+  try {
+    const params = new URLSearchParams({
+      dateFrom: selected,
+      dateTo: selected,
+      page: "1",
+      pageSize: "200",
+    });
+    const payload = await fetchJson(`/api/history/search?${params.toString()}`);
+    if (payload.ok) {
+      state.homeRows = Array.isArray(payload.rows) ? payload.rows : [];
+      state.homeTotal = Number(payload.total || state.homeRows.length || 0);
+      state.homeQueriedDate = selected;
+      state.updatedAt = payload.updatedAt || state.updatedAt;
+      state.source = payload.source || state.source;
+      mergeMatchesIntoState(state.homeRows);
+    }
+  } catch {
+    state.homeRows = [];
+    state.homeTotal = 0;
+    state.homeQueriedDate = selected;
+  } finally {
+    state.homeLoading = false;
+    render();
+  }
+}
+
+function buildHomeList() {
+  ensureHomeState();
+  const selected = state.homeDate || todayInputDate();
+  const today = todayInputDate();
+  if (selected === today) {
+    return state.matches.filter((m) => toInputDate(m.datetime) === today).sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+  }
+  if (state.homeQueriedDate !== selected) {
+    return [];
+  }
+  return [...(state.homeRows || [])].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+}
+
+function renderHomePage() {
+  ensureHomeState();
+  const selected = state.homeDate || todayInputDate();
+  const today = todayInputDate();
+  const list = buildHomeList();
+  const liveCount = list.filter((m) => m.status === "LIVE").length;
+  const resultCount = list.filter((m) => m.status === "RESULT").length;
+  const needsQuery = selected !== today && state.homeQueriedDate !== selected;
+  const dateLabel = selected === today ? "今日" : selected;
+  const listHtml = list.length
+    ? list.slice(0, 80).map(renderMatchCard).join("")
+    : `<p class="empty-tip">${needsQuery ? "已切换日期，请点击“查询该日比赛”加载历史数据" : "该日期暂无比赛数据"}</p>`;
+
+  const newsHtml = state.news.length
+    ? state.news
+        .slice(0, 10)
+        .map(
+          (item) => `
+          <a class="news-row" href="${item.url}" target="_blank" rel="noreferrer">
+            <strong>${item.title}</strong>
+            <span>${item.date || "--"}</span>
+          </a>
+        `
+        )
+        .join("")
+    : '<p class="empty-tip">暂无官方资讯</p>';
+
+  return `
+    <section class="hero-panel">
+      <div class="hero-title">
+        <h2>今日焦点</h2>
+        <p>${dateLabel}：${list.length} 场 | 进行中 ${liveCount} 场 | 完场 ${resultCount} 场</p>
+      </div>
+      <div class="controls-row">
+        <label>比赛日期
+          <input id="home-date-input" type="date" value="${selected}" />
+        </label>
+      </div>
+      <div class="card-row">
+        <button class="action-btn" data-action="home-query" type="button" ${state.homeLoading ? "disabled" : ""}>
+          ${state.homeLoading ? "查询中..." : selected === today ? "查看当天比赛" : "查询该日比赛"}
+        </button>
+        <button class="ghost-btn" data-action="home-reset-today" type="button" ${selected === today ? "disabled" : ""}>回到今天</button>
+        <button class="ghost-btn" data-action="manual-refresh" type="button">更新最新数据</button>
+      </div>
+      <p class="muted">默认展示当天比赛。切换到历史日期后，点击“查询该日比赛”才会请求历史数据。</p>
+      ${statusLine()}
+    </section>
+
+    <section class="soft-panel panel-blue">
+      <div class="section-head"><h3>比赛列表</h3></div>
+      <div class="match-list">${listHtml}</div>
+    </section>
+
+    <section class="soft-panel panel-cream">
+      <div class="section-head"><h3>中国体育彩票资讯</h3></div>
+      ${newsHtml}
+    </section>
+  `;
+}
+
+function renderMatchCard(match) {
+  const item = normalizeMatchRow(match);
+  if (!item) return "";
+  const fav = state.favorites.has(item.id);
+  const score = scoreText(item);
+  const scoreOrStatus = score === "VS" ? statusLabel(item) : score;
+  return `
+    <article class="match-row-card">
+      <div class="match-row-top">
+        <span>${item.league || "未分类联赛"}</span>
+        <span>${fmtDate(item.datetime)}</span>
+      </div>
+      <div class="match-row-main">
+        <strong>${item.home?.name || "主队"}</strong>
+        <span class="status-pill">${scoreOrStatus}</span>
+        <strong>${item.away?.name || "客队"}</strong>
+      </div>
+      <div class="match-row-tags">
+        <span class="tag">${item.matchNumStr || "竞彩"}</span>
+        <span class="tag">${item.competition || item.league || "足球赛事"}</span>
+        <span class="tag">${item.round || "场次待更新"}</span>
+      </div>
+      <div class="card-row">
+        <button class="action-btn" data-action="open-analysis" data-match-id="${item.id}" type="button">详情</button>
+        <button class="ghost-btn" data-action="toggle-favorite" data-match-id="${item.id}" type="button">${fav ? "取消关注" : "关注"}</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderAnalysisPage() {
+  const match = getMatchById(state.selectedMatchId);
+  if (!match) return '<section class="soft-panel"><p class="empty-tip">未找到比赛详情，请返回列表重新选择。</p></section>';
+
+  const analysis = normalizeAnalysis(state.analysisById[match.id]);
+  const tabs = AI_FEATURE_ENABLED ? ANALYSIS_TABS : ANALYSIS_TABS.filter((x) => x.key !== "model");
+  if (!tabs.some((x) => x.key === state.mainTab)) {
+    state.mainTab = "fundamentals";
+  }
+  const tab = tabs.find((item) => item.key === state.mainTab) || tabs[0];
+  const score = scoreText(match);
+  const odds = oddsText(match?.odds?.oneXTwo || analysis?.market?.odds?.oneXTwo);
+
+  return `
+    <section class="analysis-hero">
+      <div class="analysis-top-row">
+        <button class="ghost-btn" data-action="nav" data-page="matches" type="button">返回比赛</button>
+        <button class="ghost-btn" data-action="toggle-favorite" data-match-id="${match.id}" type="button">${state.favorites.has(match.id) ? "已关注" : "关注"}</button>
+      </div>
+      <div class="analysis-header-grid">
+        <div>
+          <p class="muted">${match.league} · ${match.matchNumStr || ""}</p>
+          <h2>${match.home.name} VS ${match.away.name}</h2>
+          <p class="muted">${fmtDate(match.datetime)} · ${statusLabel(match)} · ${match.venue || "场地待补充"}</p>
+        </div>
+        <div class="kpi-row">
+          <article class="mini-data"><span>比分</span><strong>${score}</strong></article>
+          <article class="mini-data"><span>1X2</span><strong>${odds}</strong></article>
+          <article class="mini-data"><span>联赛</span><strong>${match.competition || match.league}</strong></article>
+          <article class="mini-data"><span>编号</span><strong>${match.matchNumStr || "-"}</strong></article>
+        </div>
+      </div>
+      ${statusLine()}
+    </section>
+
+    <section class="soft-panel panel-lavender">
+      <div class="tab-row">
+        ${tabs.map((item) => `<button class="tab-btn ${item.key === state.mainTab ? "is-active" : ""}" data-action="main-tab" data-main-tab="${item.key}" type="button">${item.label}</button>`).join("")}
+      </div>
+      <div class="chip-row">
+        ${tab.subTabs
+          .map((sub) => `<button class="chip ${state.subTabs[state.mainTab] === sub ? "is-active" : ""}" data-action="sub-tab" data-sub-tab="${sub}" type="button">${TAB_LABELS[sub]}</button>`)
+          .join("")}
+      </div>
+    </section>
+
+    ${renderAnalysisContent(analysis, match)}
+    <section class="note-panel"><p>仅用于赛事数据展示与分析，不构成任何投资建议。</p></section>
+  `;
+}
+
+function setPage(page) {
+  if (!AI_FEATURE_ENABLED && page === "models") {
+    state.page = "home";
+  } else {
+    state.page = page;
+  }
+  if (state.page === "search" && !state.searchResults.length && !state.searchLoading) {
+    runHistorySearch(1).catch(() => {});
+  }
+  ensureHomeState();
+  render();
+}
+
+document.addEventListener("click", (event) => {
+  const target = event.target.closest("[data-action]");
+  if (!target) return;
+  const action = target.dataset.action;
+  if (action === "home-query") {
+    runHomeDateSearch().catch(() => {});
+    return;
+  }
+  if (action === "home-reset-today") {
+    ensureHomeState();
+    state.homeDate = todayInputDate();
+    state.homeQueriedDate = state.homeDate;
+    state.homeRows = [];
+    state.homeTotal = 0;
+    render();
+  }
+});
+
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target.id === "home-date-input") {
+    ensureHomeState();
+    state.homeDate = target.value || todayInputDate();
+    render();
+  }
+});
