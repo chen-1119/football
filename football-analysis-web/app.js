@@ -1293,12 +1293,11 @@ async function loadBootstrap() {
 }
 
 async function loadAnalysis(matchId) {
-  if (state.analysisById[matchId]) return;
   try {
     const payload = await fetchJson(`/api/matches/${encodeURIComponent(matchId)}/analysis`);
     if (payload.ok && payload.analysis) state.analysisById[matchId] = payload.analysis;
   } catch {
-    // ignore
+    // ignore; keep existing local analysis if remote call fails
   }
 }
 
@@ -2162,6 +2161,35 @@ renderAnalysisContent = function patchedRenderAnalysisContent(analysis, match) {
           <article class="mini-data"><span>近10场进失球</span><strong>${homeStanding.gf ?? "-"}:${homeStanding.ga ?? "-"} / ${awayStanding.gf ?? "-"}:${awayStanding.ga ?? "-"}</strong></article>
         </div>
         <p class="muted" style="margin-top:10px;">${h2hNote}</p>
+      </section>
+    `;
+  }
+  if (state.mainTab === "fundamentals" && state.subTabs.fundamentals === "squad") {
+    const lineup = analysis?.fundamentals?.squad?.lineup || {};
+    const injuries = analysis?.fundamentals?.squad?.injuries || {};
+    const renderInjuryRows = (rows = []) =>
+      rows.length
+        ? rows
+            .map((x) => `<div class="list-row"><strong>${x.player || "球员"}</strong><span>${x.issue || "-"} · ${x.status || "-"}</span></div>`)
+            .join("")
+        : '<p class="empty-tip">暂无官方伤停记录</p>';
+    return `
+      <section class="analysis-card">
+        <h3>人员与阵容</h3>
+        <div class="two-col">
+          <div>
+            <p class="muted">${match.home.name} 预计首发</p>
+            <p class="lead" style="font-size:14px;line-height:1.6;">${lineup.home || "首发未公布"}</p>
+            <p class="muted">伤病/停赛</p>
+            ${renderInjuryRows(injuries.home || [])}
+          </div>
+          <div>
+            <p class="muted">${match.away.name} 预计首发</p>
+            <p class="lead" style="font-size:14px;line-height:1.6;">${lineup.away || "首发未公布"}</p>
+            <p class="muted">伤病/停赛</p>
+            ${renderInjuryRows(injuries.away || [])}
+          </div>
+        </div>
       </section>
     `;
   }

@@ -194,6 +194,8 @@ let searchHistoryCountStmt = null;
 let searchHistoryRowsStmt = null;
 let searchTimelineStmt = null;
 let selectLatestByIdStmt = null;
+const advancedAnalysisCache = new Map();
+const ADVANCED_CACHE_TTL_MS = Number(process.env.ADVANCED_CACHE_TTL_MS || 5 * 60 * 1000);
 
 function normText(value, fallback = "") {
   if (value === null || value === undefined) return fallback;
@@ -1028,6 +1030,190 @@ async function fetchSportteryJson(pathname, tab = "concern") {
     throw new Error(`sporttery_api_error_${data?.errorCode || "unknown"}`);
   }
   return data;
+}
+
+async function fetchFootballUniformJson(pathname) {
+  const data = await fetchSportteryJson(pathname, "concern");
+  return data?.value || {};
+}
+
+async function fetchAdvancedMatchPack(sportteryMatchId) {
+  const sid = normText(sportteryMatchId);
+  if (!sid) return null;
+  const cached = advancedAnalysisCache.get(sid);
+  if (cached && Date.now() - cached.ts < ADVANCED_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const safe = async (path) => {
+    try {
+      return await fetchFootballUniformJson(path);
+    } catch {
+      return null;
+    }
+  };
+
+  const encoded = encodeURIComponent(sid);
+  const [head, tables, injury, players, matchResult, resultHistory, futureMatches] = await Promise.all([
+    safe(`/gateway/uniform/football/getMatchHeadV1.qry?sportteryMatchId=${encoded}`),
+    safe(`/gateway/uniform/football/getMatchTablesV1.qry?sportteryMatchId=${encoded}`),
+    safe(`/gateway/uniform/football/getInjurySuspensionV1.qry?sportteryMatchId=${encoded}`),
+    safe(`/gateway/uniform/football/getMatchPlayerV1.qry?sportteryMatchId=${encoded}&termLimits=3`),
+    safe(`/gateway/uniform/football/getMatchResultV1.qry?sportteryMatchId=${encoded}&termLimits=10&tournamentFlag=0&homeAwayFlag=0`),
+    safe(`/gateway/uniform/football/getResultHistoryV1.qry?sportteryMatchId=${encoded}&termLimits=5&tournamentFlag=0&homeAwayFlag=0`),
+    safe(`/gateway/uniform/football/getFutureMatchesV1.qry?sportteryMatchId=${encoded}&termLimits=4`),
+  ]);
+
+  const data = { head, tables, injury, players, matchResult, resultHistory, futureMatches };
+  advancedAnalysisCache.set(sid, { ts: Date.now(), data });
+  return data;
+}
+
+function parseFullCourtGoal(goalText) {
+  const text = normText(goalText);
+  const m = text.match(/(\d+)\s*[:\-]\s*(\d+)/);
+  if (!m) return { home: null, away: null };
+  return { home: Number(m[1]), away: Number(m[2]) };
+}
+
+function parseTeamFormFromMatches(list, teamSportteryId, limit = 5) {
+  const teamId = String(teamSportteryId || "");
+  if (!teamId) return [];
+  const rows = Array.isArray(list) ? list : [];
+  const form = [];
+  for (const row of rows) {
+    if (form.length >= limit) break;
+    const homeTeamId = String(row?.sportteryHomeTeamId || "");
+    const awayTeamId = String(row?.sportteryAwayTeamId || "");
+    const score = parseFullCourtGoal(row?.fullCourtGoal);
+    if (!Number.isFinite(score.home) || !Number.isFinite(score.away)) continue;
+    if (homeTeamId !== teamId && awayTeamId !== teamId) continue;
+    let gf = score.home;
+    let ga = score.away;
+    if (awayTeamId === teamId) {
+      gf = score.away;
+      ga = score.home;
+    }
+    if (gf > ga) form.push("W");
+    else if (gf < ga) form.push("L");
+    else form.push("D");
+  }
+  return form;
+}
+
+function findTableBySportteryId(tables, sportteryTeamId) {
+  const rows = Array.isArray(tables?.tables) ? tables.tables : [];
+  const id = String(sportteryTeamId || "");
+  return rows.find((row) => String(row?.sportteryTeamId || "") === id) || null;
+}
+
+function mapTableStanding(row) {
+  if (!row) return { rank: "-", points: "-", goalDiff: "-" };
+  const win = Number(row.winGoalMatchCnt || 0);
+  const draw = Number(row.drawMatchCnt || 0);
+  const total = Number(row.totalLegCnt || 0);
+  const loss = Math.max(0, total - win - draw);
+  return {
+    rank: row.ranking ?? "-",
+    points: row.points ?? "-",
+    goalDiff: row.lossGoalMatchCnt ?? "-",
+    record: `${win}-${draw}-${loss}`,
+  };
+}
+
+function normalizeInjuryPlayer(item) {
+  if (!item) return null;
+  const injury = Number(item.injuryFlag || 0) === 1;
+  const suspension = Number(item.suspensionFlag || 0) === 1;
+  const status = suspension ? "suspended" : injury ? "injured" : "available";
+  const reason = suspension ? "停赛" : injury ? "伤病" : "状态正常";
+  return {
+    player: normText(item.personName || item.playerName || "未知球员"),
+    issue: `${reason}${item.playerPositionDesc ? `(${item.playerPositionDesc})` : ""}${item.uniformNo ? ` #${item.uniformNo}` : ""}`,
+    status,
+  };
+}
+
+function buildInjuryList(sideInjury, sidePlayers) {
+  const listA = Array.isArray(sideInjury?.injuriesAndSuspensionsList) ? sideInjury.injuriesAndSuspensionsList : [];
+  const listB = Array.isArray(sidePlayers?.playerList)
+    ? sidePlayers.playerList.filter((p) => Number(p.injuryFlag || 0) === 1 || Number(p.suspensionFlag || 0) === 1)
+    : [];
+  const merged = [...listA, ...listB].map(normalizeInjuryPlayer).filter(Boolean);
+  const seen = new Set();
+  return merged.filter((x) => {
+    const key = `${x.player}|${x.issue}|${x.status}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildPredictedLineupText(sidePlayers) {
+  const list = Array.isArray(sidePlayers?.playerList) ? sidePlayers.playerList : [];
+  if (!list.length) return "首发未公布";
+  const starters = [...list]
+    .sort((a, b) => {
+      const sa = Number(a.startedMatchCnt || 0);
+      const sb = Number(b.startedMatchCnt || 0);
+      if (sb !== sa) return sb - sa;
+      const aa = Number(a.appearanceCnt || 0);
+      const ab = Number(b.appearanceCnt || 0);
+      return ab - aa;
+    })
+    .slice(0, 11)
+    .map((p) => `${normText(p.personName, "球员")}${p.uniformNo ? `#${p.uniformNo}` : ""}`);
+  return starters.join(" / ");
+}
+
+function applyAdvancedPackToAnalysis(match, analysis, pack) {
+  if (!pack) return analysis;
+  const out = JSON.parse(JSON.stringify(analysis || {}));
+  if (!out.fundamentals) out.fundamentals = {};
+  if (!out.fundamentals.history) out.fundamentals.history = {};
+  if (!out.fundamentals.squad) out.fundamentals.squad = {};
+  if (!out.context) out.context = {};
+  if (!out.context.h2h) out.context.h2h = {};
+
+  const homeSportteryId = match?.home?.id;
+  const awaySportteryId = match?.away?.id;
+
+  const homeForm = parseTeamFormFromMatches(pack?.matchResult?.home?.matchList, homeSportteryId, 5);
+  const awayForm = parseTeamFormFromMatches(pack?.matchResult?.away?.matchList, awaySportteryId, 5);
+  out.fundamentals.history.recentForm = {
+    home: homeForm.length ? homeForm : out.fundamentals.history.recentForm?.home || ["-", "-", "-", "-", "-"],
+    away: awayForm.length ? awayForm : out.fundamentals.history.recentForm?.away || ["-", "-", "-", "-", "-"],
+  };
+
+  const homeTable = findTableBySportteryId(pack?.tables, homeSportteryId);
+  const awayTable = findTableBySportteryId(pack?.tables, awaySportteryId);
+  out.fundamentals.history.standing = {
+    home: { ...(out.fundamentals.history.standing?.home || {}), ...mapTableStanding(homeTable) },
+    away: { ...(out.fundamentals.history.standing?.away || {}), ...mapTableStanding(awayTable) },
+  };
+
+  const homeInjury = buildInjuryList(pack?.injury?.home, pack?.players?.home);
+  const awayInjury = buildInjuryList(pack?.injury?.away, pack?.players?.away);
+  out.fundamentals.squad.injuries = {
+    home: homeInjury.length ? homeInjury : out.fundamentals.squad.injuries?.home || [],
+    away: awayInjury.length ? awayInjury : out.fundamentals.squad.injuries?.away || [],
+  };
+  out.fundamentals.squad.lineup = {
+    home: buildPredictedLineupText(pack?.players?.home),
+    away: buildPredictedLineupText(pack?.players?.away),
+  };
+
+  const h2hStats = pack?.resultHistory?.statistics || {};
+  const h2hList = Array.isArray(pack?.resultHistory?.matchList) ? pack.resultHistory.matchList : [];
+  out.context.h2h.last5 = {
+    homeWin: Number(h2hStats.winGoalMatchCnt || 0),
+    draw: Number(h2hStats.drawMatchCnt || 0),
+    awayWin: Number(h2hStats.lossGoalMatchCnt || 0),
+  };
+  out.context.h2h.note = h2hList.length
+    ? `历史交锋样本${h2hList.length}场：主队胜率${h2hStats.winProbability || "0%"}，平局${h2hStats.drawProbability || "0%"}。`
+    : out.context.h2h.note || "暂无可用交锋样本。";
+  return out;
 }
 
 async function fetchSportteryHtml(pathname) {
@@ -1880,7 +2066,11 @@ const server = http.createServer(async (req, res) => {
         analysis = buildAnalysisFromSporttery(match, {});
       }
 
-      const enriched = enrichAnalysisForMatch(match, analysis);
+      let enriched = enrichAnalysisForMatch(match, analysis);
+      if (normText(match.source) === "sporttery-webapi" && normText(match.sourceId)) {
+        const advPack = await fetchAdvancedMatchPack(match.sourceId);
+        enriched = applyAdvancedPackToAnalysis(match, enriched, advPack);
+      }
       cache.analysisById[id] = enriched;
       if (!fromCache) {
         cache.matches.push(match);
