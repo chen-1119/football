@@ -152,8 +152,12 @@ function statusLabel(match) {
   return STATUS_MAP[match.status] || match.statusName || "未开赛";
 }
 
-function oddsText(odds) {
-  if (!odds || !odds.home || !odds.draw || !odds.away) return "官方未提供";
+function oddsText(odds, matchStatus = "") {
+  if (!odds || !odds.home || !odds.draw || !odds.away) {
+    if (matchStatus === "WAIT") return "待开售，暂无赔率";
+    if (matchStatus === "SELL") return "已开售，赔率待更新";
+    return "官方未提供";
+  }
   return `${odds.home} / ${odds.draw} / ${odds.away}`;
 }
 
@@ -1132,7 +1136,7 @@ function renderAnalysisContent(analysis, match) {
     return `
       <section class="analysis-card">
         <h3>赔率与市场</h3>
-        <article class="mini-data"><span>1X2</span><strong>${oddsText(analysis.market.odds.oneXTwo)}</strong></article>
+        <article class="mini-data"><span>1X2</span><strong>${oddsText(analysis.market.odds.oneXTwo, match?.status)}</strong></article>
         <div>
           ${
             (analysis.market.odds.trend || [])
@@ -1393,6 +1397,11 @@ document.addEventListener("click", async (event) => {
     const matchId = target.dataset.matchId;
     if (!matchId) return;
     state.selectedMatchId = matchId;
+    const targetMatch = getMatchById(matchId);
+    if (targetMatch && (targetMatch.status === "WAIT" || targetMatch.status === "SELL")) {
+      state.mainTab = "fundamentals";
+      state.subTabs.fundamentals = "squad";
+    }
     addHistory(matchId);
     await loadAnalysis(matchId);
     setPage("analysis");
@@ -1660,7 +1669,7 @@ function renderAnalysisPage() {
   }
   const tab = tabs.find((item) => item.key === state.mainTab) || tabs[0];
   const score = scoreText(match);
-  const odds = oddsText(match?.odds?.oneXTwo || analysis?.market?.odds?.oneXTwo);
+  const odds = oddsText(match?.odds?.oneXTwo || analysis?.market?.odds?.oneXTwo, match?.status);
 
   return `
     <section class="analysis-hero">
@@ -2052,7 +2061,7 @@ function renderAnalysisPage() {
   }
   const tab = tabs.find((item) => item.key === state.mainTab) || tabs[0];
   const score = scoreText(match);
-  const odds = oddsText(match?.odds?.oneXTwo || analysis?.market?.odds?.oneXTwo);
+  const odds = oddsText(match?.odds?.oneXTwo || analysis?.market?.odds?.oneXTwo, match?.status);
 
   return `
     <section class="analysis-hero">

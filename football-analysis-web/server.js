@@ -909,8 +909,8 @@ function buildAnalysisFromSporttery(match, detail) {
     fundamentals: {
       history: {
         recentForm: {
-          home: [homeScore > awayScore ? "W" : "D", "W", "D", "L", "W"],
-          away: [awayScore > homeScore ? "W" : "D", "L", "W", "D", "L"],
+          home: ["-", "-", "-", "-", "-"],
+          away: ["-", "-", "-", "-", "-"],
         },
         standing: {
           home: { rank: "-", points: "-", goalDiff: "-" },
@@ -927,10 +927,10 @@ function buildAnalysisFromSporttery(match, detail) {
       },
       squad: {
         injuries: {
-          home: [{ player: "官方数据待补充", issue: "伤停名单未公开", status: "unknown" }],
-          away: [{ player: "官方数据待补充", issue: "伤停名单未公开", status: "unknown" }],
+          home: [],
+          away: [],
         },
-        lineup: { home: "4-3-3", away: "4-2-3-1" },
+        lineup: { home: "首发未公布", away: "首发未公布" },
       },
     },
     context: {
