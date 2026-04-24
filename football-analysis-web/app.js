@@ -2148,6 +2148,9 @@ function computeGlobalPredictionHit(windowSize = 200) {
 function renderPreMatchPanel(match, analysis) {
   const probs = analysis?.prediction?.probabilities || {};
   const d = derivedMetrics(match, analysis);
+  const locked = Boolean(analysis?.predictionArchive?.locked);
+  const lockedAt = analysis?.predictionArchive?.lockedAt || "";
+  const headHint = locked ? `赛前预测已封存 · ${fmtDate(lockedAt)}` : "开赛前模型估计";
   const predictedOutcome = outcomeByProbabilities(probs);
   const scoreTop = (analysis?.prediction?.scoreMatrix || []).slice(0, 3);
   const scoresText = scoreTop.length
@@ -2158,7 +2161,7 @@ function renderPreMatchPanel(match, analysis) {
 
   return `
     <section class="soft-panel panel-blue">
-      <div class="section-head"><h3>赛前预测总览</h3><span class="muted">开赛前模型估计</span></div>
+      <div class="section-head"><h3>赛前预测总览</h3><span class="muted">${headHint}</span></div>
       <div class="mini-grid">
         <article class="mini-data"><span>胜平负概率</span><strong>主 ${pct(Number(probs.home || 0))} / 平 ${pct(Number(probs.draw || 0))} / 客 ${pct(Number(probs.away || 0))}</strong></article>
         <article class="mini-data"><span>倾向结果</span><strong>${outcomeLabelByKey(predictedOutcome)}</strong></article>
@@ -2204,11 +2207,16 @@ function renderPostMatchPanel(match, analysis) {
   const homeTrend = trendTextFromForm(analysis?.fundamentals?.history?.recentForm?.home || []);
   const awayTrend = trendTextFromForm(analysis?.fundamentals?.history?.recentForm?.away || []);
   const global = computeGlobalPredictionHit(200);
+  const lockInfo =
+    analysis?.predictionArchive?.locked && analysis?.predictionArchive?.lockedAt
+      ? `赛前预测封存于 ${fmtDate(analysis.predictionArchive.lockedAt)}`
+      : "赛前预测未封存，当前按最新数据计算";
 
   const hitText = (ok) => (ok ? "命中" : "未命中");
   return `
     <section class="soft-panel panel-cream">
       <div class="section-head"><h3>赛后复盘</h3><span class="muted">基于真实完场赛果</span></div>
+      <p class="muted">${lockInfo}</p>
       <div class="mini-grid">
         <article class="mini-data"><span>赛果</span><strong>${actualScore}（${outcomeLabelByKey(actualOutcome)}）</strong></article>
         <article class="mini-data"><span>预测结果</span><strong>${outcomeLabelByKey(predictedOutcome)}（${hitText(predictedOutcome === actualOutcome)}）</strong></article>

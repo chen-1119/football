@@ -194,6 +194,11 @@ let searchHistoryCountStmt = null;
 let searchHistoryRowsStmt = null;
 let searchTimelineStmt = null;
 let selectLatestByIdStmt = null;
+let insertPredictionArchiveStmt = null;
+let selectPredictionArchiveByIdStmt = null;
+let selectPredictionArchiveAllStmt = null;
+let selectLatestOddsByIdStmt = null;
+const predictionArchiveCache = new Map();
 const advancedAnalysisCache = new Map();
 const ADVANCED_CACHE_TTL_MS = Number(process.env.ADVANCED_CACHE_TTL_MS || 5 * 60 * 1000);
 
@@ -318,11 +323,21 @@ function initDatabase() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS prediction_archive (
+      match_id TEXT PRIMARY KEY,
+      locked_at TEXT NOT NULL,
+      status_at_lock TEXT,
+      lock_reason TEXT,
+      analysis_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_match_latest_datetime ON match_latest(match_time);
     CREATE INDEX IF NOT EXISTS idx_match_latest_league ON match_latest(league);
     CREATE INDEX IF NOT EXISTS idx_match_latest_status ON match_latest(status);
     CREATE INDEX IF NOT EXISTS idx_match_history_match ON match_history(match_id);
     CREATE INDEX IF NOT EXISTS idx_match_history_snapshot ON match_history(snapshot_at);
+    CREATE INDEX IF NOT EXISTS idx_prediction_archive_locked_at ON prediction_archive(locked_at);
   `);
 
   insertSnapshotStmt = db.prepare(`
@@ -481,6 +496,68 @@ function initDatabase() {
     WHERE match_id = ?
     LIMIT 1
   `);
+
+  insertPredictionArchiveStmt = db.prepare(`
+    INSERT OR IGNORE INTO prediction_archive (
+      match_id, locked_at, status_at_lock, lock_reason, analysis_json, updated_at
+    ) VALUES (
+      @match_id, @locked_at, @status_at_lock, @lock_reason, @analysis_json, @updated_at
+    )
+  `);
+
+  selectPredictionArchiveByIdStmt = db.prepare(`
+    SELECT
+      match_id AS matchId,
+      locked_at AS lockedAt,
+      status_at_lock AS statusAtLock,
+      lock_reason AS lockReason,
+      analysis_json AS analysisJson
+    FROM prediction_archive
+    WHERE match_id = ?
+    LIMIT 1
+  `);
+
+  selectPredictionArchiveAllStmt = db.prepare(`
+    SELECT
+      match_id AS matchId,
+      locked_at AS lockedAt,
+      status_at_lock AS statusAtLock,
+      lock_reason AS lockReason,
+      analysis_json AS analysisJson
+    FROM prediction_archive
+  `);
+
+  selectLatestOddsByIdStmt = db.prepare(`
+    SELECT
+      odds_home AS home,
+      odds_draw AS draw,
+      odds_away AS away,
+      snapshot_at AS snapshotAt
+    FROM match_history
+    WHERE match_id = ?
+      AND odds_home IS NOT NULL
+      AND odds_draw IS NOT NULL
+      AND odds_away IS NOT NULL
+    ORDER BY datetime(snapshot_at) DESC
+    LIMIT 1
+  `);
+
+  predictionArchiveCache.clear();
+  const archivedRows = selectPredictionArchiveAllStmt.all();
+  for (const row of archivedRows) {
+    try {
+      const parsed = JSON.parse(row.analysisJson || "{}");
+      predictionArchiveCache.set(row.matchId, {
+        matchId: row.matchId,
+        lockedAt: row.lockedAt || null,
+        statusAtLock: row.statusAtLock || "",
+        lockReason: row.lockReason || "",
+        analysis: parsed,
+      });
+    } catch {
+      // ignore broken archive rows
+    }
+  }
 }
 
 function toHistoryRow(match, snapshotAt, updatedAt) {
@@ -695,6 +772,7 @@ function schedulerStatus() {
     lastSnapshotFile: cache.lastSnapshotFile,
     matchCount: cache.matches.length,
     analysisCount: Object.keys(cache.analysisById).length,
+    archivedPredictionCount: predictionArchiveCache.size,
     lastError: cache.lastError,
   };
 }
@@ -831,6 +909,145 @@ function sanitizeOdds(rawOdds) {
 
 function hasValidOdds(odds) {
   return Boolean(odds && odds.home > 1.01 && odds.draw > 1.01 && odds.away > 1.01);
+}
+
+function cloneJson(value, fallback = null) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return fallback;
+  }
+}
+
+function isPreMatchStatus(status) {
+  return status === "WAIT" || status === "SELL";
+}
+
+function getPredictionArchive(matchId) {
+  return predictionArchiveCache.get(String(matchId || "")) || null;
+}
+
+function mergeLockedForecastIntoAnalysis(analysis, archiveEntry) {
+  const out = cloneJson(analysis, {}) || {};
+  const locked = cloneJson(archiveEntry?.analysis, null);
+  if (!locked) return out;
+
+  if (!out.market) out.market = {};
+  if (locked.market?.odds) out.market.odds = cloneJson(locked.market.odds, out.market.odds || {});
+
+  if (locked.market?.psychology) {
+    if (!out.market.psychology) out.market.psychology = {};
+    if (locked.market.psychology.analysisText) {
+      out.market.psychology.analysisText = locked.market.psychology.analysisText;
+    }
+    if (locked.market.psychology.motivation) {
+      out.market.psychology.motivation = cloneJson(locked.market.psychology.motivation, out.market.psychology.motivation || {});
+    }
+    if (locked.market.psychology.publicSentiment) {
+      out.market.psychology.publicSentiment = cloneJson(
+        locked.market.psychology.publicSentiment,
+        out.market.psychology.publicSentiment || {}
+      );
+    }
+  }
+
+  if (locked.prediction) out.prediction = cloneJson(locked.prediction, out.prediction || {});
+  out.predictionArchive = {
+    locked: true,
+    lockedAt: archiveEntry?.lockedAt || null,
+    statusAtLock: archiveEntry?.statusAtLock || "",
+    lockReason: archiveEntry?.lockReason || "",
+  };
+  return out;
+}
+
+function buildArchiveCandidateAnalysis(match, currentAnalysis, previousAnalysis) {
+  const prev = cloneJson(previousAnalysis, null);
+  if (prev && hasValidOdds(prev?.market?.odds?.oneXTwo)) {
+    return prev;
+  }
+
+  const current = cloneJson(currentAnalysis, null);
+  if (current && hasValidOdds(current?.market?.odds?.oneXTwo)) {
+    return current;
+  }
+
+  const row = selectLatestOddsByIdStmt ? selectLatestOddsByIdStmt.get(String(match?.id || "")) : null;
+  if (row && hasValidOdds({ home: row.home, draw: row.draw, away: row.away })) {
+    const m = cloneJson(match, {}) || {};
+    if (!m.odds) m.odds = {};
+    m.odds.oneXTwo = {
+      home: Number(row.home),
+      draw: Number(row.draw),
+      away: Number(row.away),
+    };
+    if (!m.status || !isPreMatchStatus(m.status)) {
+      m.status = "SELL";
+      m.statusCode = m.statusCode || "2";
+      m.statusName = m.statusName || "已开售";
+    }
+    const rebuilt = buildAnalysisFromSporttery(m, {});
+    return enrichAnalysisForMatch(m, rebuilt);
+  }
+
+  return prev || current || null;
+}
+
+function tryLockPredictionArchive(match, currentAnalysis, previousAnalysis, previousMatch = null) {
+  const matchId = String(match?.id || "");
+  if (!matchId || isPreMatchStatus(match?.status)) return null;
+
+  const existing = getPredictionArchive(matchId);
+  if (existing) return existing;
+  if (!insertPredictionArchiveStmt) return null;
+
+  const candidate = buildArchiveCandidateAnalysis(match, currentAnalysis, previousAnalysis);
+  if (!candidate) return null;
+
+  const now = new Date().toISOString();
+  const lockReason = previousMatch && isPreMatchStatus(previousMatch.status) ? "kickoff_transition" : "post_kickoff_backfill";
+  const payload = {
+    match_id: matchId,
+    locked_at: now,
+    status_at_lock: normText(match?.status),
+    lock_reason: lockReason,
+    analysis_json: JSON.stringify(candidate),
+    updated_at: now,
+  };
+  const info = insertPredictionArchiveStmt.run(payload);
+
+  if (info?.changes > 0) {
+    const archived = {
+      matchId,
+      lockedAt: now,
+      statusAtLock: payload.status_at_lock,
+      lockReason,
+      analysis: candidate,
+    };
+    predictionArchiveCache.set(matchId, archived);
+    return archived;
+  }
+
+  if (selectPredictionArchiveByIdStmt) {
+    const row = selectPredictionArchiveByIdStmt.get(matchId);
+    if (row) {
+      try {
+        const parsed = JSON.parse(row.analysisJson || "{}");
+        const archived = {
+          matchId,
+          lockedAt: row.lockedAt || null,
+          statusAtLock: row.statusAtLock || "",
+          lockReason: row.lockReason || "",
+          analysis: parsed,
+        };
+        predictionArchiveCache.set(matchId, archived);
+        return archived;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 function poisson(lambda, k) {
@@ -1446,6 +1663,9 @@ function fallbackNews() {
 }
 
 async function refreshFromSporttery() {
+  const prevAnalysisById = cache.analysisById && typeof cache.analysisById === "object" ? cache.analysisById : {};
+  const prevMatchesById = new Map((Array.isArray(cache.matches) ? cache.matches : []).map((m) => [m.id, m]));
+
   const lists = await Promise.all(SPORTTERY_METHODS.map((method) => fetchMatchListByMethod(method)));
   const merged = dedupeMatches(lists.flat());
   const news = await fetchChineseNews();
@@ -1468,6 +1688,17 @@ async function refreshFromSporttery() {
   const analysisById = {};
   merged.forEach((match) => {
     analysisById[match.id] = buildAnalysisFromSporttery(match, detailMap.get(match.id) || {});
+  });
+
+  merged.forEach((match) => {
+    if (isPreMatchStatus(match.status)) return;
+    const currentAnalysis = analysisById[match.id];
+    const prevAnalysis = prevAnalysisById[match.id] || null;
+    const prevMatch = prevMatchesById.get(match.id) || null;
+    const archiveEntry = tryLockPredictionArchive(match, currentAnalysis, prevAnalysis, prevMatch);
+    if (archiveEntry) {
+      analysisById[match.id] = mergeLockedForecastIntoAnalysis(currentAnalysis, archiveEntry);
+    }
   });
 
   cache.source = "sporttery-webapi";
@@ -2070,6 +2301,13 @@ const server = http.createServer(async (req, res) => {
       if (normText(match.source) === "sporttery-webapi" && normText(match.sourceId)) {
         const advPack = await fetchAdvancedMatchPack(match.sourceId);
         enriched = applyAdvancedPackToAnalysis(match, enriched, advPack);
+      }
+      if (!isPreMatchStatus(match.status)) {
+        const archiveEntry =
+          getPredictionArchive(id) || tryLockPredictionArchive(match, enriched, cache.analysisById[id] || null, fromCache);
+        if (archiveEntry) {
+          enriched = mergeLockedForecastIntoAnalysis(enriched, archiveEntry);
+        }
       }
       cache.analysisById[id] = enriched;
       if (!fromCache) {
