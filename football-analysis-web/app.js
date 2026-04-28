@@ -859,10 +859,13 @@ function renderMatchesPage() {
     { key: "schedule", label: "赛程" },
   ];
 
-  const matches = state.matches
-    .filter(matchFilterForTab(state.matchTab))
-    .filter((m) => state.matchLeague === "全部" || m.league === state.matchLeague)
-    .slice(0, 1200);
+  const statusMatches = state.matches.filter(matchFilterForTab(state.matchTab));
+  const leagueMatches = statusMatches.filter((m) => state.matchLeague === "全部" || m.league === state.matchLeague);
+  const matches = leagueMatches.slice(0, 1200);
+  const emptyText =
+    statusMatches.length && !leagueMatches.length
+      ? `当前分类有 ${statusMatches.length} 场，但联赛筛选「${state.matchLeague}」下暂无数据，请切换为“全部”。`
+      : "暂无赛事";
 
   return `
     <section class="soft-panel panel-lavender">
@@ -883,7 +886,7 @@ function renderMatchesPage() {
 
     <section class="soft-panel panel-blue">
       <div class="section-head"><h3>赛事列表</h3><span class="muted">${matches.length} 场</span></div>
-      <div class="match-list">${matches.map(renderMatchCard).join("") || '<p class="empty-tip">暂无赛事</p>'}</div>
+      <div class="match-list">${matches.map(renderMatchCard).join("") || `<p class="empty-tip">${emptyText}</p>`}</div>
     </section>
   `;
 }
@@ -1415,6 +1418,9 @@ document.addEventListener("click", async (event) => {
   if (action === "nav") return setPage(target.dataset.page);
   if (action === "match-tab") {
     state.matchTab = target.dataset.matchTab;
+    state.matchLeague = "全部";
+    state.prefs.defaultLeague = "全部";
+    saveJson(STORAGE_KEYS.prefs, state.prefs);
     render();
     return;
   }
