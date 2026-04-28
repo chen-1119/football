@@ -19,3 +19,5 @@ services:
         value: 16
       - key: DETAIL_ENRICH_LIMIT
         value: 60
+      - key: ADMIN_SYNC_TOKEN
+        generateValue: true

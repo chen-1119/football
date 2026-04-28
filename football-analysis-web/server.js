@@ -7,6 +7,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8787);
 const REFRESH_MINUTES = Number(process.env.REFRESH_MINUTES || 5);
 const LIVE_REFRESH_SECONDS = Number(process.env.LIVE_REFRESH_SECONDS || 60);
+const ADMIN_SYNC_TOKEN = process.env.ADMIN_SYNC_TOKEN || "";
 const SPORTTERY_BASE = "https://webapi.sporttery.cn";
 const PUBLIC_DIR = __dirname;
 const CACHE_DIR = path.join(__dirname, "server-cache");
@@ -742,6 +743,26 @@ function snapshotPayload() {
     lastDurationMs: cache.lastDurationMs,
     lastSnapshotFile: cache.lastSnapshotFile,
   };
+}
+
+function importSnapshotPayload(payload) {
+  if (!payload || typeof payload !== "object") throw new Error("invalid_snapshot_payload");
+  const matches = Array.isArray(payload.matches) ? payload.matches : [];
+  if (!matches.length) throw new Error("snapshot_matches_required");
+
+  cache.source = normText(payload.source, "external-sync");
+  cache.updatedAt = payload.updatedAt || new Date().toISOString();
+  cache.matches = matches;
+  cache.analysisById =
+    payload.analysisById && typeof payload.analysisById === "object" ? payload.analysisById : {};
+  cache.news = Array.isArray(payload.news) ? payload.news : [];
+  cache.lastError = null;
+  cache.lastSuccessAt = cache.updatedAt;
+  cache.nextRefreshAt = computeNextRefreshAt();
+  cache.refreshCount += 1;
+  persistMatchesToDatabase(cache.matches);
+  saveCache();
+  writeHistorySnapshot();
 }
 
 function saveCache() {
@@ -2390,6 +2411,32 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && urlObj.pathname === "/api/news") {
       json(res, 200, { ok: true, updatedAt: cache.updatedAt, count: cache.news.length, news: cache.news });
+      return;
+    }
+
+    if (req.method === "POST" && urlObj.pathname === "/api/admin/snapshot-import") {
+      if (!ADMIN_SYNC_TOKEN) {
+        json(res, 403, { ok: false, error: "admin_sync_disabled" });
+        return;
+      }
+      const auth = req.headers.authorization || "";
+      const token = auth.startsWith("Bearer ") ? auth.slice(7) : urlObj.searchParams.get("token") || "";
+      if (token !== ADMIN_SYNC_TOKEN) {
+        json(res, 401, { ok: false, error: "unauthorized" });
+        return;
+      }
+      try {
+        const payload = parseJsonBody(bodyText);
+        importSnapshotPayload(payload);
+        json(res, 200, {
+          ok: true,
+          source: cache.source,
+          updatedAt: cache.updatedAt,
+          count: cache.matches.length,
+        });
+      } catch (error) {
+        json(res, 400, { ok: false, error: String(error.message || error) });
+      }
       return;
     }
 

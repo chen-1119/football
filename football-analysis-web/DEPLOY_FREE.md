@@ -38,6 +38,23 @@ DEEPSEEK_API_KEY=
 - The local SQLite/cache files under `server-cache/` are not intended as durable storage on free hosting.
 - If the service restarts, it will rebuild cache by fetching Sporttery data again.
 - For production paid usage, move `server-cache/matches.sqlite` to a persistent disk or external database.
+- Some cloud egress IPs may be blocked by Sporttery. If `/api/status` shows `sporttery_http_567`, use external sync below.
+
+## External Sync For Render
+
+Render can serve the site globally, but Sporttery may block Render's cloud IP. In that case, run a local sync from a machine that can access Sporttery:
+
+1. In Render, open the service environment variables and copy `ADMIN_SYNC_TOKEN`.
+2. Start the local app and let it refresh Sporttery data.
+3. Push the local snapshot to Render:
+
+```powershell
+$env:RENDER_BASE_URL="https://football-analysis-web.onrender.com"
+$env:ADMIN_SYNC_TOKEN="paste_render_admin_sync_token_here"
+npm run push:render
+```
+
+The Render site will then show the pushed data globally.
 
 ## Docker Alternative
 
