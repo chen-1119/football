@@ -15,10 +15,20 @@ services:
         value: 1800
       - key: DATA_PROVIDER
         value: auto
+      - key: THESPORTSDB_KEY
+        sync: false
       - key: API_FOOTBALL_KEY
         sync: false
       - key: FOOTBALL_DATA_TOKEN
         sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: CLOUD_SNAPSHOT_TABLE
+        value: football_snapshots
+      - key: CLOUD_SNAPSHOT_ID
+        value: latest
       - key: CLOUD_FIXTURE_WINDOW_DAYS
         value: 1
       - key: SPORTTERY_PAGE_SIZE

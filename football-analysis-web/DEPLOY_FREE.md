@@ -19,8 +19,13 @@ HOST=0.0.0.0
 REFRESH_MINUTES=30
 LIVE_REFRESH_SECONDS=1800
 DATA_PROVIDER=auto
+THESPORTSDB_KEY=
 API_FOOTBALL_KEY=
 FOOTBALL_DATA_TOKEN=
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+CLOUD_SNAPSHOT_TABLE=football_snapshots
+CLOUD_SNAPSHOT_ID=latest
 CLOUD_FIXTURE_WINDOW_DAYS=1
 SPORTTERY_PAGE_SIZE=80
 SPORTTERY_PAGE_DEPTH=16
@@ -31,10 +36,34 @@ DETAIL_ENRICH_LIMIT=60
 
 Use one of these free API keys on Render:
 
-- Recommended: API-Football free plan. Set `API_FOOTBALL_KEY`. It supports fixtures, status, kickoff time, live minute/status and score fields. Keep `REFRESH_MINUTES=30` to stay within the free daily quota.
+- Recommended free-first source: TheSportsDB. Set `THESPORTSDB_KEY`. It provides soccer day events and a livescore endpoint with a free key.
+- Strong structured live data: API-Football free plan. Set `API_FOOTBALL_KEY`. It supports fixtures, status, kickoff time, live minute/status and score fields. Keep `REFRESH_MINUTES=30` to stay within the free daily quota.
 - Backup: football-data.org free plan. Set `FOOTBALL_DATA_TOKEN`. It supports fixtures and delayed scores on the free plan, but true live scores require a paid tier.
 
-`DATA_PROVIDER=auto` chooses `API_FOOTBALL_KEY` first, then `FOOTBALL_DATA_TOKEN`, then Sporttery/local seed fallback.
+`DATA_PROVIDER=auto` chooses `THESPORTSDB_KEY` first, then `API_FOOTBALL_KEY`, then `FOOTBALL_DATA_TOKEN`, then Sporttery/local seed fallback.
+
+## Free Cloud Snapshot Storage
+
+Render Free does not preserve local filesystem changes. Use Supabase Free for the latest snapshot:
+
+```sql
+create table if not exists public.football_snapshots (
+  id text primary key,
+  payload jsonb not null,
+  updated_at timestamptz not null default now()
+);
+```
+
+Set these Render environment variables:
+
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+CLOUD_SNAPSHOT_TABLE=football_snapshots
+CLOUD_SNAPSHOT_ID=latest
+```
+
+See `docs/cloud-data-plan.md` for the full cloud update flow.
 
 Optional AI provider keys:
 
@@ -52,6 +81,16 @@ DEEPSEEK_API_KEY=
 - If the service restarts, it will rebuild cache through the configured free API. If no free API key is set, it uses the bundled seed snapshot.
 - For production paid usage, move `server-cache/matches.sqlite` to a persistent disk or external database.
 - Some cloud egress IPs may be blocked by Sporttery. If `/api/status` shows `sporttery_http_567`, set `API_FOOTBALL_KEY` or `FOOTBALL_DATA_TOKEN`.
+
+## Cloud Scheduled Refresh
+
+The included GitHub Actions workflow can wake Render every 30 minutes without using your local computer.
+
+Set this GitHub repository secret:
+
+```env
+RENDER_REFRESH_URL=https://football-analysis-web.onrender.com/api/refresh
+```
 
 ## External Sync For Render
 

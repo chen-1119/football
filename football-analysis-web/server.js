@@ -11,9 +11,15 @@ const ADMIN_SYNC_TOKEN = process.env.ADMIN_SYNC_TOKEN || "";
 const DATA_PROVIDER = String(process.env.DATA_PROVIDER || "auto").trim().toLowerCase();
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY || "";
 const FOOTBALL_DATA_TOKEN = process.env.FOOTBALL_DATA_TOKEN || "";
+const THESPORTSDB_KEY = process.env.THESPORTSDB_KEY || "";
+const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const CLOUD_SNAPSHOT_TABLE = process.env.CLOUD_SNAPSHOT_TABLE || "football_snapshots";
+const CLOUD_SNAPSHOT_ID = process.env.CLOUD_SNAPSHOT_ID || "latest";
 const SPORTTERY_BASE = "https://webapi.sporttery.cn";
 const API_FOOTBALL_BASE = "https://v3.football.api-sports.io";
 const FOOTBALL_DATA_BASE = "https://api.football-data.org/v4";
+const THESPORTSDB_BASE = "https://www.thesportsdb.com";
 const PUBLIC_DIR = __dirname;
 const CACHE_DIR = path.join(__dirname, "server-cache");
 const CACHE_FILE = path.join(CACHE_DIR, "snapshot.json");
@@ -749,6 +755,46 @@ function snapshotPayload() {
     lastDurationMs: cache.lastDurationMs,
     lastSnapshotFile: cache.lastSnapshotFile,
   };
+}
+
+function cloudSnapshotEnabled() {
+  return Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+}
+
+function supabaseHeaders(extra = {}) {
+  return {
+    apikey: SUPABASE_SERVICE_ROLE_KEY,
+    Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    "Content-Type": "application/json",
+    ...extra,
+  };
+}
+
+async function loadCloudSnapshot() {
+  if (!cloudSnapshotEnabled()) return null;
+  const table = encodeURIComponent(CLOUD_SNAPSHOT_TABLE);
+  const id = encodeURIComponent(CLOUD_SNAPSHOT_ID);
+  const url = `${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}&select=payload&limit=1`;
+  const response = await fetch(url, { headers: supabaseHeaders({ Accept: "application/json" }) });
+  if (!response.ok) throw new Error(`supabase_load_http_${response.status}`);
+  const rows = await response.json();
+  return rows?.[0]?.payload || null;
+}
+
+async function saveCloudSnapshot() {
+  if (!cloudSnapshotEnabled() || !Array.isArray(cache.matches) || !cache.matches.length) return;
+  const table = encodeURIComponent(CLOUD_SNAPSHOT_TABLE);
+  const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=id`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: supabaseHeaders({ Prefer: "resolution=merge-duplicates" }),
+    body: JSON.stringify({
+      id: CLOUD_SNAPSHOT_ID,
+      payload: snapshotPayload(),
+      updated_at: new Date().toISOString(),
+    }),
+  });
+  if (!response.ok) throw new Error(`supabase_save_http_${response.status}`);
 }
 
 function importSnapshotPayload(payload) {
@@ -2004,10 +2050,100 @@ async function fetchMatchesFromFootballData() {
   return dedupeMatches((payload?.matches || []).map(mapFootballDataMatch));
 }
 
+async function fetchTheSportsDbJson(pathname) {
+  if (!THESPORTSDB_KEY) throw new Error("thesportsdb_key_missing");
+  const response = await fetch(`${THESPORTSDB_BASE}${pathname}`, {
+    headers: {
+      "X-API-KEY": THESPORTSDB_KEY,
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) throw new Error(`thesportsdb_http_${response.status}`);
+  return response.json();
+}
+
+function theSportsDbStatusBucket(row) {
+  const progress = String(row?.strProgress || row?.strStatus || row?.strEventStatus || "").toLowerCase();
+  const hasScore = row?.intHomeScore !== null && row?.intHomeScore !== undefined && row?.intAwayScore !== null && row?.intAwayScore !== undefined;
+  if (progress.includes("live") || progress.includes("half") || progress.includes("'") || progress.includes("in play")) return "LIVE";
+  if (progress.includes("final") || progress.includes("finished") || progress.includes("ft") || (hasScore && row?.dateEventLocal)) return "RESULT";
+  return "WAIT";
+}
+
+function mapTheSportsDbEvent(row, sourceMethod = "eventsday") {
+  const eventId = row?.idEvent || row?.idLiveScore || row?.idEventLocal || `${row?.dateEvent || ""}-${row?.strHomeTeam || ""}-${row?.strAwayTeam || ""}`;
+  const homeName = row?.strHomeTeam || row?.strHomeTeamBadge || row?.strHome || "Home";
+  const awayName = row?.strAwayTeam || row?.strAwayTeamBadge || row?.strAway || "Away";
+  const date = row?.dateEventLocal || row?.dateEvent || formatDateOffset(0);
+  const time = row?.strTimeLocal || row?.strTime || "00:00:00";
+  const timestamp = row?.strTimestamp || (String(date).includes("T") ? date : parseDateTime(date, String(time).slice(0, 5)));
+  const status = theSportsDbStatusBucket(row);
+  return {
+    id: `thesportsdb-${eventId}`,
+    sourceId: String(eventId || ""),
+    source: "thesportsdb",
+    sourceMethod,
+    matchNumStr: eventId ? `TSDB-${eventId}` : "",
+    leagueCode: String(row?.idLeague || ""),
+    league: row?.strLeague || "Football",
+    competition: row?.strLeague || "Football",
+    round: row?.intRound ? `Round ${row.intRound}` : "",
+    datetime: timestamp,
+    venue: row?.strVenue || "Venue not provided",
+    city: row?.strCountry || "",
+    status,
+    statusCode: row?.strProgress || row?.strStatus || status,
+    statusName: row?.strProgress || row?.strStatus || status,
+    home: {
+      id: String(row?.idHomeTeam || ""),
+      name: homeName,
+      short: toShortName(homeName),
+      logo: row?.strHomeTeamBadge || "",
+      color: "#2B68FF",
+      rank: null,
+    },
+    away: {
+      id: String(row?.idAwayTeam || ""),
+      name: awayName,
+      short: toShortName(awayName),
+      logo: row?.strAwayTeamBadge || "",
+      color: "#F93A4A",
+      rank: null,
+    },
+    odds: { oneXTwo: sanitizeOdds({}) },
+    score: {
+      fullTime: {
+        home: toNum(row?.intHomeScore, null),
+        away: toNum(row?.intAwayScore, null),
+      },
+    },
+  };
+}
+
+async function fetchMatchesFromTheSportsDb() {
+  const days = [];
+  const window = Math.max(0, Math.min(3, CLOUD_FIXTURE_WINDOW_DAYS));
+  for (let offset = -window; offset <= window; offset += 1) days.push(formatDateOffset(offset));
+  const dayPayloads = await Promise.all(
+    days.map((date) => fetchTheSportsDbJson(`/api/v1/json/${encodeURIComponent(THESPORTSDB_KEY)}/eventsday.php?d=${encodeURIComponent(date)}&s=Soccer`))
+  );
+  let livePayload = null;
+  try {
+    livePayload = await fetchTheSportsDbJson("/api/v2/json/livescore/soccer");
+  } catch {
+    livePayload = null;
+  }
+  const dayMatches = dayPayloads.flatMap((payload) => (payload?.events || []).map((row) => mapTheSportsDbEvent(row, "eventsday")));
+  const liveMatches = (livePayload?.livescores || livePayload?.events || []).map((row) => mapTheSportsDbEvent(row, "livescore"));
+  return dedupeMatches([...dayMatches, ...liveMatches]);
+}
+
 function configuredProvider() {
+  if (DATA_PROVIDER === "thesportsdb" || DATA_PROVIDER === "sportsdb") return "thesportsdb";
   if (DATA_PROVIDER === "api-football" || DATA_PROVIDER === "apifootball") return "api-football";
   if (DATA_PROVIDER === "football-data" || DATA_PROVIDER === "footballdata") return "football-data";
   if (DATA_PROVIDER === "sporttery") return "sporttery";
+  if (THESPORTSDB_KEY) return "thesportsdb";
   if (API_FOOTBALL_KEY) return "api-football";
   if (FOOTBALL_DATA_TOKEN) return "football-data";
   return "sporttery";
@@ -2159,7 +2295,14 @@ async function refreshFromSporttery() {
 async function refreshFromCloudFootballProvider(provider) {
   const prevAnalysisById = cache.analysisById && typeof cache.analysisById === "object" ? cache.analysisById : {};
   const prevMatchesById = new Map((Array.isArray(cache.matches) ? cache.matches : []).map((m) => [m.id, m]));
-  const merged = provider === "football-data" ? await fetchMatchesFromFootballData() : await fetchMatchesFromApiFootball();
+  let merged = [];
+  if (provider === "football-data") {
+    merged = await fetchMatchesFromFootballData();
+  } else if (provider === "thesportsdb") {
+    merged = await fetchMatchesFromTheSportsDb();
+  } else {
+    merged = await fetchMatchesFromApiFootball();
+  }
   if (!merged.length) throw new Error(`${provider}_empty_matches`);
 
   const analysisById = {};
@@ -2233,6 +2376,10 @@ async function refreshAllData() {
     cache.refreshing = false;
     writeHistorySnapshot();
     saveCache();
+    saveCloudSnapshot().catch((error) => {
+      cache.lastError = cache.lastError || String(error.message || error);
+      saveCache();
+    });
   }
 }
 
@@ -2604,8 +2751,10 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         source: cache.source,
         configuredProvider: configuredProvider(),
+        theSportsDbEnabled: Boolean(THESPORTSDB_KEY),
         apiFootballEnabled: Boolean(API_FOOTBALL_KEY),
         footballDataEnabled: Boolean(FOOTBALL_DATA_TOKEN),
+        cloudSnapshotEnabled: cloudSnapshotEnabled(),
         ...schedulerStatus(),
       });
       return;
@@ -2901,7 +3050,18 @@ const server = http.createServer(async (req, res) => {
 initDatabase();
 loadCache();
 loadAiPredictionCache();
-refreshAllData().catch(() => {});
+loadCloudSnapshot()
+  .then((payload) => {
+    if (payload && Array.isArray(payload.matches) && payload.matches.length) {
+      importSnapshotPayload(payload);
+    }
+  })
+  .catch((error) => {
+    cache.lastError = cache.lastError || String(error.message || error);
+  })
+  .finally(() => {
+    refreshAllData().catch(() => {});
+  });
 setInterval(() => {
   refreshAllData().catch(() => {});
 }, REFRESH_MINUTES * 60 * 1000);
