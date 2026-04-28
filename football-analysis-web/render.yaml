@@ -10,9 +10,17 @@ services:
       - key: HOST
         value: 0.0.0.0
       - key: REFRESH_MINUTES
-        value: 5
+        value: 30
       - key: LIVE_REFRESH_SECONDS
-        value: 60
+        value: 1800
+      - key: DATA_PROVIDER
+        value: auto
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: FOOTBALL_DATA_TOKEN
+        sync: false
+      - key: CLOUD_FIXTURE_WINDOW_DAYS
+        value: 1
       - key: SPORTTERY_PAGE_SIZE
         value: 80
       - key: SPORTTERY_PAGE_DEPTH

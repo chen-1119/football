@@ -8,7 +8,12 @@ const PORT = Number(process.env.PORT || 8787);
 const REFRESH_MINUTES = Number(process.env.REFRESH_MINUTES || 5);
 const LIVE_REFRESH_SECONDS = Number(process.env.LIVE_REFRESH_SECONDS || 60);
 const ADMIN_SYNC_TOKEN = process.env.ADMIN_SYNC_TOKEN || "";
+const DATA_PROVIDER = String(process.env.DATA_PROVIDER || "auto").trim().toLowerCase();
+const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY || "";
+const FOOTBALL_DATA_TOKEN = process.env.FOOTBALL_DATA_TOKEN || "";
 const SPORTTERY_BASE = "https://webapi.sporttery.cn";
+const API_FOOTBALL_BASE = "https://v3.football.api-sports.io";
+const FOOTBALL_DATA_BASE = "https://api.football-data.org/v4";
 const PUBLIC_DIR = __dirname;
 const CACHE_DIR = path.join(__dirname, "server-cache");
 const CACHE_FILE = path.join(CACHE_DIR, "snapshot.json");
@@ -23,6 +28,7 @@ const SPORTTERY_PAGE_SIZE = Number(process.env.SPORTTERY_PAGE_SIZE || 80);
 const SPORTTERY_PAGE_DEPTH = Number(process.env.SPORTTERY_PAGE_DEPTH || 16);
 const DETAIL_ENRICH_LIMIT = Number(process.env.DETAIL_ENRICH_LIMIT || 60);
 const FX_USD_CNY = Number(process.env.FX_USD_CNY || 7.2);
+const CLOUD_FIXTURE_WINDOW_DAYS = Number(process.env.CLOUD_FIXTURE_WINDOW_DAYS || 1);
 
 const AI_PROVIDERS = [
   { id: "openai", name: "OpenAI", envKey: "OPENAI_API_KEY" },
@@ -1141,6 +1147,13 @@ function parseDateTime(dateStr, timeStr) {
   return `${date}T${hhmm}+08:00`;
 }
 
+function formatDateOffset(offsetDays = 0) {
+  const now = new Date();
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60 * 1000;
+  const sg = new Date(utcMs + 8 * 60 * 60 * 1000 + offsetDays * 24 * 60 * 60 * 1000);
+  return sg.toISOString().slice(0, 10);
+}
+
 function toShortName(name) {
   if (!name) return "---";
   if (name.length <= 3) return name.toUpperCase();
@@ -1835,6 +1848,171 @@ async function fetchMatchListByMethod(method) {
   return allPayloads.flatMap((payload) => flattenMatchesFromPayload(payload, method));
 }
 
+async function fetchApiFootballJson(pathname) {
+  if (!API_FOOTBALL_KEY) throw new Error("api_football_key_missing");
+  const url = `${API_FOOTBALL_BASE}${pathname}`;
+  const response = await fetch(url, {
+    headers: {
+      "x-apisports-key": API_FOOTBALL_KEY,
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) throw new Error(`api_football_http_${response.status}`);
+  const data = await response.json();
+  const errors = data?.errors;
+  if (errors && ((Array.isArray(errors) && errors.length) || (typeof errors === "object" && Object.keys(errors).length))) {
+    throw new Error(`api_football_error_${JSON.stringify(errors).slice(0, 160)}`);
+  }
+  return data;
+}
+
+function apiFootballStatusBucket(shortStatus) {
+  const code = String(shortStatus || "").toUpperCase();
+  if (["1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"].includes(code)) return "LIVE";
+  if (["FT", "AET", "PEN"].includes(code)) return "RESULT";
+  if (["PST", "CANC", "ABD", "AWD", "WO"].includes(code)) return "RESULT";
+  return "WAIT";
+}
+
+function mapApiFootballFixture(row) {
+  const fixture = row?.fixture || {};
+  const league = row?.league || {};
+  const teams = row?.teams || {};
+  const goals = row?.goals || {};
+  const score = row?.score || {};
+  const id = `api-football-${fixture.id}`;
+  const statusCode = String(fixture.status?.short || "NS");
+  const status = apiFootballStatusBucket(statusCode);
+  const homeScore = toNum(score.fulltime?.home, toNum(goals.home, null));
+  const awayScore = toNum(score.fulltime?.away, toNum(goals.away, null));
+  return {
+    id,
+    sourceId: String(fixture.id || ""),
+    source: "api-football",
+    sourceMethod: "fixtures",
+    matchNumStr: fixture.id ? `AF-${fixture.id}` : "",
+    leagueCode: String(league.id || ""),
+    league: league.name || "Unknown League",
+    competition: league.name || "Football",
+    round: league.round || "",
+    datetime: fixture.date || new Date().toISOString(),
+    venue: fixture.venue?.name || "Venue not provided",
+    city: fixture.venue?.city || "",
+    status,
+    statusCode,
+    statusName: fixture.status?.long || statusCode,
+    home: {
+      id: String(teams.home?.id || ""),
+      name: teams.home?.name || "Home",
+      short: toShortName(teams.home?.name || "Home"),
+      logo: teams.home?.logo || "",
+      color: "#2B68FF",
+      rank: null,
+    },
+    away: {
+      id: String(teams.away?.id || ""),
+      name: teams.away?.name || "Away",
+      short: toShortName(teams.away?.name || "Away"),
+      logo: teams.away?.logo || "",
+      color: "#F93A4A",
+      rank: null,
+    },
+    odds: { oneXTwo: sanitizeOdds({}) },
+    score: { fullTime: { home: homeScore, away: awayScore } },
+  };
+}
+
+async function fetchMatchesFromApiFootball() {
+  const days = [];
+  const window = Math.max(0, Math.min(3, CLOUD_FIXTURE_WINDOW_DAYS));
+  for (let offset = -window; offset <= window; offset += 1) days.push(formatDateOffset(offset));
+  const payloads = await Promise.all(
+    days.map((date) => fetchApiFootballJson(`/fixtures?date=${encodeURIComponent(date)}&timezone=Asia%2FShanghai`))
+  );
+  return dedupeMatches(payloads.flatMap((payload) => (payload?.response || []).map(mapApiFootballFixture)));
+}
+
+async function fetchFootballDataJson(pathname) {
+  if (!FOOTBALL_DATA_TOKEN) throw new Error("football_data_token_missing");
+  const response = await fetch(`${FOOTBALL_DATA_BASE}${pathname}`, {
+    headers: {
+      "X-Auth-Token": FOOTBALL_DATA_TOKEN,
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) throw new Error(`football_data_http_${response.status}`);
+  return response.json();
+}
+
+function footballDataStatusBucket(statusText) {
+  const status = String(statusText || "").toUpperCase();
+  if (["LIVE", "IN_PLAY", "PAUSED"].includes(status)) return "LIVE";
+  if (status === "FINISHED") return "RESULT";
+  return "WAIT";
+}
+
+function mapFootballDataMatch(row) {
+  const id = `football-data-${row.id}`;
+  const statusCode = String(row.status || "");
+  const status = footballDataStatusBucket(statusCode);
+  return {
+    id,
+    sourceId: String(row.id || ""),
+    source: "football-data",
+    sourceMethod: "matches",
+    matchNumStr: row.id ? `FD-${row.id}` : "",
+    leagueCode: row.competition?.code || String(row.competition?.id || ""),
+    league: row.competition?.name || "Unknown League",
+    competition: row.competition?.name || "Football",
+    round: row.stage || row.group || "",
+    datetime: row.utcDate || new Date().toISOString(),
+    venue: row.venue || "Venue not provided",
+    city: "",
+    status,
+    statusCode,
+    statusName: statusCode,
+    home: {
+      id: String(row.homeTeam?.id || ""),
+      name: row.homeTeam?.name || "Home",
+      short: toShortName(row.homeTeam?.shortName || row.homeTeam?.tla || row.homeTeam?.name || "Home"),
+      crest: row.homeTeam?.crest || "",
+      color: "#2B68FF",
+      rank: null,
+    },
+    away: {
+      id: String(row.awayTeam?.id || ""),
+      name: row.awayTeam?.name || "Away",
+      short: toShortName(row.awayTeam?.shortName || row.awayTeam?.tla || row.awayTeam?.name || "Away"),
+      crest: row.awayTeam?.crest || "",
+      color: "#F93A4A",
+      rank: null,
+    },
+    odds: { oneXTwo: sanitizeOdds({}) },
+    score: {
+      fullTime: {
+        home: toNum(row.score?.fullTime?.home, null),
+        away: toNum(row.score?.fullTime?.away, null),
+      },
+    },
+  };
+}
+
+async function fetchMatchesFromFootballData() {
+  const from = formatDateOffset(-Math.max(0, Math.min(3, CLOUD_FIXTURE_WINDOW_DAYS)));
+  const to = formatDateOffset(Math.max(0, Math.min(3, CLOUD_FIXTURE_WINDOW_DAYS)));
+  const payload = await fetchFootballDataJson(`/matches?dateFrom=${encodeURIComponent(from)}&dateTo=${encodeURIComponent(to)}`);
+  return dedupeMatches((payload?.matches || []).map(mapFootballDataMatch));
+}
+
+function configuredProvider() {
+  if (DATA_PROVIDER === "api-football" || DATA_PROVIDER === "apifootball") return "api-football";
+  if (DATA_PROVIDER === "football-data" || DATA_PROVIDER === "footballdata") return "football-data";
+  if (DATA_PROVIDER === "sporttery") return "sporttery";
+  if (API_FOOTBALL_KEY) return "api-football";
+  if (FOOTBALL_DATA_TOKEN) return "football-data";
+  return "sporttery";
+}
+
 async function fetchMatchDetail(sourceId, statusCode) {
   const payload = await fetchSportteryJson(
     `/gateway/uniform/fb/getMatchGeneral.qry?matchId=${encodeURIComponent(sourceId)}&matchStatus=${encodeURIComponent(
@@ -1978,13 +2156,49 @@ async function refreshFromSporttery() {
   persistMatchesToDatabase(merged);
 }
 
+async function refreshFromCloudFootballProvider(provider) {
+  const prevAnalysisById = cache.analysisById && typeof cache.analysisById === "object" ? cache.analysisById : {};
+  const prevMatchesById = new Map((Array.isArray(cache.matches) ? cache.matches : []).map((m) => [m.id, m]));
+  const merged = provider === "football-data" ? await fetchMatchesFromFootballData() : await fetchMatchesFromApiFootball();
+  if (!merged.length) throw new Error(`${provider}_empty_matches`);
+
+  const analysisById = {};
+  merged.forEach((match) => {
+    analysisById[match.id] = buildAnalysisFromSporttery(match, {});
+  });
+
+  merged.forEach((match) => {
+    if (isPreMatchStatus(match.status)) return;
+    const currentAnalysis = analysisById[match.id];
+    const prevAnalysis = prevAnalysisById[match.id] || null;
+    const prevMatch = prevMatchesById.get(match.id) || null;
+    const archiveEntry = tryLockPredictionArchive(match, currentAnalysis, prevAnalysis, prevMatch);
+    if (archiveEntry) {
+      analysisById[match.id] = mergeLockedForecastIntoAnalysis(currentAnalysis, archiveEntry);
+    }
+  });
+
+  cache.source = provider;
+  cache.matches = merged;
+  cache.analysisById = analysisById;
+  cache.news = Array.isArray(cache.news) ? cache.news : [];
+  cache.updatedAt = new Date().toISOString();
+  cache.lastError = null;
+  persistMatchesToDatabase(merged);
+}
+
 async function refreshAllData() {
   if (cache.refreshing) return;
   cache.refreshing = true;
   const startedAt = Date.now();
   cache.lastAttemptAt = new Date(startedAt).toISOString();
   try {
-    await refreshFromSporttery();
+    const provider = configuredProvider();
+    if (provider === "sporttery") {
+      await refreshFromSporttery();
+    } else {
+      await refreshFromCloudFootballProvider(provider);
+    }
     cache.lastSuccessAt = cache.updatedAt;
     cache.refreshCount += 1;
     cache.lastDurationMs = Date.now() - startedAt;
@@ -2001,7 +2215,7 @@ async function refreshAllData() {
       !String(cache.source).startsWith("fallback-mock");
 
     if (hasRealSnapshot) {
-      cache.source = "sporttery-webapi-stale";
+      cache.source = `${cache.source || configuredProvider()}-stale`;
     } else {
       const list = fallbackMatches();
       const analysisById = {};
@@ -2386,7 +2600,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST") bodyText = await readBody(req);
 
     if (req.method === "GET" && urlObj.pathname === "/api/status") {
-      json(res, 200, { ok: true, source: cache.source, ...schedulerStatus() });
+      json(res, 200, {
+        ok: true,
+        source: cache.source,
+        configuredProvider: configuredProvider(),
+        apiFootballEnabled: Boolean(API_FOOTBALL_KEY),
+        footballDataEnabled: Boolean(FOOTBALL_DATA_TOKEN),
+        ...schedulerStatus(),
+      });
       return;
     }
 
