@@ -3,9 +3,8 @@ services:
     name: football-analysis-web
     runtime: node
     plan: free
-    rootDir: football-analysis-web
-    buildCommand: npm ci
-    startCommand: npm start
+    buildCommand: cd football-analysis-web && npm ci --include-workspace-root
+    startCommand: cd football-analysis-web && npm start
     healthCheckPath: /api/status
     envVars:
       - key: HOST
