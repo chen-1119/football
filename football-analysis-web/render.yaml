@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: football-analysis-web
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/status
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: REFRESH_MINUTES
+        value: 5
+      - key: LIVE_REFRESH_SECONDS
+        value: 60
+      - key: SPORTTERY_PAGE_SIZE
+        value: 80
+      - key: SPORTTERY_PAGE_DEPTH
+        value: 16
+      - key: DETAIL_ENRICH_LIMIT
+        value: 60

@@ -49,7 +49,7 @@ body {
     radial-gradient(circle at 85% 10%, rgba(230, 165, 255, 0.24) 0%, rgba(230, 165, 255, 0) 45%),
     var(--bg);
   font-family: var(--font-body);
-  padding: 14px 14px 94px;
+  padding: 14px 14px 150px;
 }
 
 .bg-orb {
@@ -183,6 +183,7 @@ body {
   margin: 0 auto;
   display: grid;
   gap: 12px;
+  padding-bottom: 72px;
 }
 
 .hero-panel,
@@ -594,6 +595,21 @@ input,
   word-break: break-word;
 }
 
+.ai-match-output {
+  margin: 12px 0 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-soft), #ffffff 34%);
+  padding: 12px;
+  max-height: 520px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  font-family: inherit;
+  font-size: 14px;
+}
+
 .strategy-panel {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -680,9 +696,9 @@ input,
 }
 
 .match-row-card {
-  padding: 10px;
+  padding: 12px;
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .match-row-top {
@@ -701,20 +717,49 @@ input,
 
 .match-row-main strong {
   text-align: center;
+  line-height: 1.25;
 }
 
 .status-pill {
   border-radius: 999px;
-  padding: 3px 10px;
+  padding: 4px 12px;
   border: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-soft), #eaf2ff 35%);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .match-row-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.tag-live {
+  border-color: rgba(230, 63, 63, 0.28);
+  background: rgba(230, 63, 63, 0.12);
+  color: #c92828;
+}
+
+.tag-result {
+  border-color: rgba(69, 198, 113, 0.26);
+  background: rgba(69, 198, 113, 0.12);
+  color: #23864a;
+}
+
+.tag-wait {
+  border-color: rgba(37, 109, 255, 0.22);
+  background: rgba(37, 109, 255, 0.09);
+  color: var(--primary);
+}
+
+.tag-sell {
+  border-color: rgba(223, 188, 70, 0.28);
+  background: rgba(223, 188, 70, 0.12);
+  color: #92740b;
 }
 
 .card-row {
@@ -914,7 +959,7 @@ input,
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  bottom: 14px;
+  bottom: 10px;
   width: min(780px, calc(100% - 24px));
   border-radius: 24px;
   border: 1px solid var(--line);
@@ -923,14 +968,14 @@ input,
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 4px;
-  padding: 6px;
+  padding: 5px;
   z-index: 9;
 }
 
 .nav-btn {
   border: 1px solid transparent;
   border-radius: 18px;
-  padding: 8px 4px;
+  padding: 7px 4px;
   display: grid;
   gap: 2px;
   justify-items: center;
@@ -966,7 +1011,11 @@ input,
 
 @media (max-width: 560px) {
   body {
-    padding: 10px 10px 88px;
+    padding: 10px 10px 140px;
+  }
+
+  .app-main {
+    padding-bottom: 84px;
   }
 
   .hero-panel,
@@ -980,5 +1029,14 @@ input,
 
   .template-row {
     flex-direction: column;
+  }
+
+  .match-row-main {
+    grid-template-columns: 1fr;
+  }
+
+  .match-row-main strong,
+  .status-pill {
+    justify-self: center;
   }
 }

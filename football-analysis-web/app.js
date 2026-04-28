@@ -100,6 +100,9 @@ const state = {
   aiPrompt: "",
   aiOutput: "",
   aiLoading: false,
+  matchAiPredictions: {},
+  matchAiLoading: {},
+  matchAiError: {},
   mainTab: "fundamentals",
   subTabs: {
     fundamentals: "history",
@@ -1305,6 +1308,26 @@ async function loadAnalysis(matchId) {
   }
 }
 
+async function loadMatchAiPrediction(matchId) {
+  if (!matchId || state.matchAiPredictions[matchId] || state.matchAiLoading[matchId]) return;
+  state.matchAiLoading[matchId] = true;
+  state.matchAiError[matchId] = "";
+  render();
+  try {
+    const payload = await fetchJson(`/api/matches/${encodeURIComponent(matchId)}/ai-prediction`);
+    if (payload.ok && payload.prediction) {
+      state.matchAiPredictions[matchId] = payload.prediction;
+    } else {
+      state.matchAiError[matchId] = payload.error || "AI预测生成失败";
+    }
+  } catch (error) {
+    state.matchAiError[matchId] = String(error.message || error);
+  } finally {
+    state.matchAiLoading[matchId] = false;
+    render();
+  }
+}
+
 async function loadAiCatalog() {
   try {
     const payload = await fetchJson("/api/ai/models");
@@ -1364,6 +1387,7 @@ async function runAiAnalyze() {
 
 function statusLine() {
   const refresh = state.scheduler?.refreshMinutes ?? 5;
+  const liveRefresh = state.scheduler?.liveRefreshSeconds ?? 60;
   const hint =
     state.source === "fallback-mock"
       ? `<span class="warn">当前为离线示例数据，请先启动本地服务：${API_BASE || window.location.origin}</span>`
@@ -1373,6 +1397,7 @@ function statusLine() {
       <span>数据源：${state.source}</span>
       <span>更新时间：${fmtDate(state.updatedAt)}</span>
       <span>同步周期：${refresh} 分钟</span>
+      <span>即时赛况：${liveRefresh} 秒检测</span>
       ${hint}
     </div>
   `;
@@ -1404,6 +1429,7 @@ document.addEventListener("click", async (event) => {
     }
     addHistory(matchId);
     await loadAnalysis(matchId);
+    loadMatchAiPrediction(matchId).catch(() => {});
     setPage("analysis");
     return;
   }
@@ -1855,6 +1881,25 @@ function mergeMatchesIntoState(rows) {
   state.matches = Array.from(map.values()).sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 }
 
+function liveSortValue(match) {
+  const order = { LIVE: 0, SELL: 1, WAIT: 2, RESULT: 3 };
+  return order[match?.status] ?? 9;
+}
+
+function matchStatusTag(match) {
+  if (match?.status === "LIVE") return '<span class="tag tag-live">实时</span>';
+  if (match?.status === "RESULT") return '<span class="tag tag-result">完场</span>';
+  if (match?.status === "SELL") return '<span class="tag tag-sell">已开售</span>';
+  if (match?.status === "WAIT") return '<span class="tag tag-wait">未开赛</span>';
+  return `<span class="tag">${statusLabel(match)}</span>`;
+}
+
+function getInstantMatches() {
+  return state.matches
+    .filter((m) => m.status === "LIVE" || m.status === "SELL")
+    .sort((a, b) => liveSortValue(a) - liveSortValue(b) || new Date(a.datetime) - new Date(b.datetime));
+}
+
 function getMatchById(id) {
   if (!id) return null;
   const main = state.matches.find((m) => m.id === id);
@@ -1912,8 +1957,8 @@ async function runHomeDateSearch() {
   const today = todayInputDate();
   if (selected === today) {
     state.homeQueriedDate = selected;
-    state.homeRows = [];
-    state.homeTotal = state.matches.filter((m) => toInputDate(m.datetime) === selected).length;
+    state.homeRows = getInstantMatches();
+    state.homeTotal = state.homeRows.length || state.matches.filter((m) => toInputDate(m.datetime) === selected).length;
     render();
     return;
   }
@@ -1951,12 +1996,16 @@ function buildHomeList() {
   const selected = state.homeDate || todayInputDate();
   const today = todayInputDate();
   if (selected === today) {
-    return state.matches.filter((m) => toInputDate(m.datetime) === today).sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    const instant = getInstantMatches();
+    if (instant.length) return instant;
+    return state.matches
+      .filter((m) => toInputDate(m.datetime) === today)
+      .sort((a, b) => liveSortValue(a) - liveSortValue(b) || new Date(a.datetime) - new Date(b.datetime));
   }
   if (state.homeQueriedDate !== selected) {
     return [];
   }
-  return [...(state.homeRows || [])].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+  return [...(state.homeRows || [])].sort((a, b) => liveSortValue(a) - liveSortValue(b) || new Date(a.datetime) - new Date(b.datetime));
 }
 
 function renderHomePage() {
@@ -1964,10 +2013,20 @@ function renderHomePage() {
   const selected = state.homeDate || todayInputDate();
   const today = todayInputDate();
   const list = buildHomeList();
+  const instantCount = getInstantMatches().length;
   const liveCount = list.filter((m) => m.status === "LIVE").length;
+  const sellCount = list.filter((m) => m.status === "SELL").length;
+  const waitCount = list.filter((m) => m.status === "WAIT").length;
   const resultCount = list.filter((m) => m.status === "RESULT").length;
   const needsQuery = selected !== today && state.homeQueriedDate !== selected;
-  const dateLabel = selected === today ? "今日" : selected;
+  const isInstantMode = selected === today && instantCount > 0;
+  const dateLabel = isInstantMode ? "即时赛事池" : selected === today ? "今日赛况" : selected;
+  const liveNote =
+    isInstantMode
+      ? "当前展示全量数据中的进行中/已开售比赛，不受当天日期过滤。"
+      : selected === today && liveCount === 0
+      ? "当前暂无进行中或已开售比赛，先展示今日已完成/待开赛场次。"
+      : "首页默认展示当天即时赛况，进行中比赛优先；比分、开赛状态和完场赛果随上游接口刷新。";
   const listHtml = list.length
     ? list.slice(0, 80).map(renderMatchCard).join("")
     : `<p class="empty-tip">${needsQuery ? "已切换日期，请点击“查询该日比赛”加载历史数据" : "该日期暂无比赛数据"}</p>`;
@@ -1989,8 +2048,8 @@ function renderHomePage() {
   return `
     <section class="hero-panel">
       <div class="hero-title">
-        <h2>今日焦点</h2>
-        <p>${dateLabel}：${list.length} 场 | 进行中 ${liveCount} 场 | 完场 ${resultCount} 场</p>
+        <h2>${selected === today ? "即时比赛" : "历史赛程"}</h2>
+        <p>${dateLabel}：${list.length} 场 | 进行中 ${liveCount} 场 | 已开售 ${sellCount} 场 | 未开赛 ${waitCount} 场 | 完场 ${resultCount} 场</p>
       </div>
       <div class="controls-row">
         <label>比赛日期
@@ -1999,17 +2058,17 @@ function renderHomePage() {
       </div>
       <div class="card-row">
         <button class="action-btn" data-action="home-query" type="button" ${state.homeLoading ? "disabled" : ""}>
-          ${state.homeLoading ? "查询中..." : selected === today ? "查看当天比赛" : "查询该日比赛"}
+          ${state.homeLoading ? "查询中..." : selected === today ? "查看即时比赛" : "查询该日比赛"}
         </button>
         <button class="ghost-btn" data-action="home-reset-today" type="button" ${selected === today ? "disabled" : ""}>回到今天</button>
         <button class="ghost-btn" data-action="manual-refresh" type="button">更新最新数据</button>
       </div>
-      <p class="muted">默认展示当天比赛。切换到历史日期后，点击“查询该日比赛”才会请求历史数据。</p>
+      <p class="muted">${liveNote}</p>
       ${statusLine()}
     </section>
 
     <section class="soft-panel panel-blue">
-      <div class="section-head"><h3>比赛列表</h3></div>
+      <div class="section-head"><h3>${selected === today ? "即时赛况" : "比赛列表"}</h3><span class="muted">${isInstantMode ? "LIVE / SELL" : "进行中优先"}</span></div>
       <div class="match-list">${listHtml}</div>
     </section>
 
@@ -2038,6 +2097,7 @@ function renderMatchCard(match) {
         <strong>${item.away?.name || "客队"}</strong>
       </div>
       <div class="match-row-tags">
+        ${matchStatusTag(item)}
         <span class="tag">${item.matchNumStr || "竞彩"}</span>
         <span class="tag">${item.competition || item.league || "足球赛事"}</span>
         <span class="tag">${item.round || "场次待更新"}</span>
@@ -2238,6 +2298,57 @@ function renderPostMatchPanel(match, analysis) {
   `;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderDailyAiPredictionPanel(match) {
+  const prediction = state.matchAiPredictions[match.id];
+  const loading = Boolean(state.matchAiLoading[match.id]);
+  const error = state.matchAiError[match.id] || "";
+
+  if (loading && !prediction) {
+    return `
+      <section class="soft-panel panel-lavender">
+        <div class="section-head"><h3>AI赛前预测</h3><span class="muted">每日生成一次</span></div>
+        <p class="muted">正在生成本场结构化预测，生成后当天重复打开会直接读取缓存。</p>
+      </section>
+    `;
+  }
+
+  if (!prediction) {
+    return `
+      <section class="soft-panel panel-lavender">
+        <div class="section-head"><h3>AI赛前预测</h3><span class="muted">每日生成一次</span></div>
+        <p class="muted">${error ? `暂未生成：${escapeHtml(error)}` : "打开详情后自动生成；如未出现，请刷新本场详情。"}</p>
+        <div class="card-row">
+          <button class="action-btn" data-action="reload-match-ai" data-match-id="${match.id}" type="button">生成AI预测</button>
+        </div>
+      </section>
+    `;
+  }
+
+  const source = prediction.providerConfigured
+    ? `${prediction.modelName || prediction.modelId || "AI模型"}${prediction.cached ? " · 今日缓存" : " · 刚生成"}`
+    : "本地结构化降级分析 · 未配置外部模型";
+
+  return `
+    <section class="soft-panel panel-lavender">
+      <div class="section-head"><h3>AI赛前预测</h3><span class="muted">${source}</span></div>
+      <p class="muted">生成时间：${fmtDate(prediction.generatedAt)}。同一场比赛当天只生成一次，减少模型请求。</p>
+      <pre class="ai-match-output">${escapeHtml(prediction.text || "暂无内容")}</pre>
+      <div class="card-row">
+        <button class="ghost-btn" data-action="reload-match-ai" data-match-id="${match.id}" type="button" ${loading ? "disabled" : ""}>${loading ? "生成中..." : "重新读取"}</button>
+      </div>
+    </section>
+  `;
+}
+
 function renderAnalysisPage() {
   const match = getMatchById(state.selectedMatchId);
   if (!match) return '<section class="soft-panel"><p class="empty-tip">未找到比赛详情，请返回列表重新选择。</p></section>';
@@ -2274,6 +2385,7 @@ function renderAnalysisPage() {
     </section>
 
     ${renderPreMatchPanel(match, analysis)}
+    ${renderDailyAiPredictionPanel(match)}
     ${renderPostMatchPanel(match, analysis)}
 
     <section class="soft-panel panel-lavender">
@@ -2320,6 +2432,14 @@ document.addEventListener("click", (event) => {
     state.homeRows = [];
     state.homeTotal = 0;
     render();
+    return;
+  }
+  if (action === "reload-match-ai") {
+    const matchId = target.dataset.matchId || state.selectedMatchId;
+    if (matchId) {
+      delete state.matchAiPredictions[matchId];
+      loadMatchAiPrediction(matchId).catch(() => {});
+    }
   }
 });
 
@@ -2333,6 +2453,17 @@ document.addEventListener("change", (event) => {
 });
 
 const __renderAnalysisContentBase = renderAnalysisContent;
+function injuryStatusLabel(status) {
+  const map = {
+    injured: "伤病",
+    suspended: "停赛",
+    available: "可用",
+    questionable: "出战成疑",
+    doubtful: "大概率缺阵",
+  };
+  return map[String(status || "").toLowerCase()] || status || "-";
+}
+
 renderAnalysisContent = function patchedRenderAnalysisContent(analysis, match) {
   if (state.mainTab === "fundamentals" && state.subTabs.fundamentals === "history") {
     const homeStanding = analysis?.fundamentals?.history?.standing?.home || {};
@@ -2370,7 +2501,7 @@ renderAnalysisContent = function patchedRenderAnalysisContent(analysis, match) {
     const renderInjuryRows = (rows = []) =>
       rows.length
         ? rows
-            .map((x) => `<div class="list-row"><strong>${x.player || "球员"}</strong><span>${x.issue || "-"} · ${x.status || "-"}</span></div>`)
+            .map((x) => `<div class="list-row"><strong>${x.player || "球员"}</strong><span>${x.issue || "-"} · ${injuryStatusLabel(x.status)}</span></div>`)
             .join("")
         : '<p class="empty-tip">暂无官方伤停记录</p>';
     return `

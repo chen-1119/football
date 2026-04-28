@@ -3,6 +3,9 @@
   "version": "1.1.0",
   "private": true,
   "description": "Football analysis dashboard with scheduled data sync and model outputs.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "start": "node server.js"
   },

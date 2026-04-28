@@ -6,10 +6,12 @@ const Database = require("better-sqlite3");
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8787);
 const REFRESH_MINUTES = Number(process.env.REFRESH_MINUTES || 5);
+const LIVE_REFRESH_SECONDS = Number(process.env.LIVE_REFRESH_SECONDS || 60);
 const SPORTTERY_BASE = "https://webapi.sporttery.cn";
 const PUBLIC_DIR = __dirname;
 const CACHE_DIR = path.join(__dirname, "server-cache");
 const CACHE_FILE = path.join(CACHE_DIR, "snapshot.json");
+const AI_PREDICTION_CACHE_FILE = path.join(CACHE_DIR, "ai-predictions.json");
 const SNAPSHOT_HISTORY_DIR = path.join(CACHE_DIR, "history");
 const DB_FILE = path.join(CACHE_DIR, "matches.sqlite");
 const MAX_SNAPSHOT_HISTORY = Number(process.env.MAX_SNAPSHOT_HISTORY || 48);
@@ -200,6 +202,7 @@ let selectPredictionArchiveAllStmt = null;
 let selectLatestOddsByIdStmt = null;
 const predictionArchiveCache = new Map();
 const advancedAnalysisCache = new Map();
+const aiPredictionCache = new Map();
 const ADVANCED_CACHE_TTL_MS = Number(process.env.ADVANCED_CACHE_TTL_MS || 5 * 60 * 1000);
 
 function normText(value, fallback = "") {
@@ -737,6 +740,46 @@ function saveCache() {
   fs.writeFileSync(CACHE_FILE, JSON.stringify(snapshotPayload(), null, 2), "utf8");
 }
 
+function localDateKey(value = new Date()) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return localDateKey(new Date());
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function aiPredictionCacheKey(matchId, dateKey = localDateKey()) {
+  return `${dateKey}:${String(matchId || "")}`;
+}
+
+function loadAiPredictionCache() {
+  ensureCacheDir();
+  aiPredictionCache.clear();
+  if (!fs.existsSync(AI_PREDICTION_CACHE_FILE)) return;
+  try {
+    const raw = fs.readFileSync(AI_PREDICTION_CACHE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+    Object.entries(parsed).forEach(([key, value]) => {
+      if (value && typeof value === "object") aiPredictionCache.set(key, value);
+    });
+  } catch (error) {
+    cache.lastError = `load ai prediction cache failed: ${String(error.message || error)}`;
+  }
+}
+
+function saveAiPredictionCache() {
+  ensureCacheDir();
+  const today = localDateKey();
+  const payload = {};
+  for (const [key, value] of aiPredictionCache.entries()) {
+    const dateKey = String(key).split(":")[0];
+    if (dateKey === today || value?.pinned) payload[key] = value;
+  }
+  fs.writeFileSync(AI_PREDICTION_CACHE_FILE, JSON.stringify(payload, null, 2), "utf8");
+}
+
 function writeHistorySnapshot() {
   ensureCacheDir();
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -763,6 +806,7 @@ function schedulerStatus() {
   return {
     refreshing: cache.refreshing,
     refreshMinutes: REFRESH_MINUTES,
+    liveRefreshSeconds: LIVE_REFRESH_SECONDS,
     updatedAt: cache.updatedAt,
     lastAttemptAt: cache.lastAttemptAt,
     lastSuccessAt: cache.lastSuccessAt,
@@ -843,6 +887,200 @@ function aiCatalogPayload() {
     promptTemplates: AI_PROMPT_TEMPLATES,
     pricingScenarios: AI_PRICING_SCENARIOS,
   };
+}
+
+function compactAnalysisForPrompt(match, analysis) {
+  return {
+    match: {
+      id: match?.id || "",
+      league: match?.league || "",
+      competition: match?.competition || "",
+      time: match?.datetime || "",
+      venue: match?.venue || "",
+      status: match?.status || "",
+      stage: match?.round || match?.matchNumStr || "",
+      home: match?.home || {},
+      away: match?.away || {},
+      odds: match?.odds || {},
+      score: match?.score || {},
+    },
+    fundamentals: analysis?.fundamentals || {},
+    context: analysis?.context || {},
+    market: analysis?.market || {},
+    prediction: analysis?.prediction || {},
+    dataNotice:
+      "如果排名、xG、伤停、天气、裁判、亚盘或大小球等字段缺失，必须写明“该项数据不足”，不要编造。",
+  };
+}
+
+function buildMatchAiPredictionPrompt(match, analysis) {
+  const data = compactAnalysisForPrompt(match, analysis);
+  return `请你作为一名专业足球赛事分析师，基于多维度数据对【${match?.home?.name || "主队"}】vs【${match?.away?.name || "客队"}】进行赛前分析和预测。不要只根据排名或近期胜负判断，需要综合球队基本面、攻防数据、主客场表现、近期状态、伤停阵容、战术风格、赛程体能、战意、历史交锋、天气场地、裁判因素以及赔率盘口变化进行分析。
+
+比赛信息：
+- 比赛：${match?.home?.name || "主队"} vs ${match?.away?.name || "客队"}
+- 联赛/赛事：${match?.league || match?.competition || "该项数据不足"}
+- 比赛时间：${match?.datetime || "该项数据不足"}
+- 比赛地点：${match?.venue || "该项数据不足"}
+- 当前阶段：${match?.round || match?.matchNumStr || "该项数据不足"}
+
+已知结构化数据如下，请只基于这些数据和明确可推导的信息分析；缺失项必须标注“该项数据不足”：
+\`\`\`json
+${JSON.stringify(data, null, 2)}
+\`\`\`
+
+请按以下结构输出：
+一、比赛基本面分析
+二、近期状态分析
+三、主客场表现分析
+四、进攻能力分析
+五、防守能力分析
+六、伤停与首发阵容分析
+七、战术风格与克制关系分析
+八、赛程体能与战意分析
+九、历史交锋分析
+十、天气、场地与裁判因素
+十一、赔率与盘口分析
+十二、综合判断与预测结论
+
+结论必须包含：
+1. 胜平负倾向和信心等级。
+2. 让球方向。如果缺少亚洲盘口，说明“亚洲盘口数据不足”，只能给数据倾向。
+3. 大小球方向。如果缺少大小球盘口，说明“大小球盘口数据不足”，只能基于进球模型判断。
+4. 2-3 个参考比分。
+5. 风险点。
+6. 最终建议，分为“稳妥方向”和“激进方向”。
+
+输出要求：逻辑清晰，每个判断说明依据；不要绝对化；不要提供投注入口或保证收益表述。`;
+}
+
+function fallbackAiPredictionText(match, analysis) {
+  const probs = analysis?.prediction?.probabilities || {};
+  const homeP = Math.round(Number(probs.home || 0) * 100);
+  const drawP = Math.round(Number(probs.draw || 0) * 100);
+  const awayP = Math.round(Number(probs.away || 0) * 100);
+  const scores = (analysis?.prediction?.scoreMatrix || [])
+    .slice(0, 3)
+    .map((x) => x.score)
+    .join("、");
+  const standing = analysis?.fundamentals?.history?.standing || {};
+  const ad = analysis?.fundamentals?.attackDefense || {};
+  const h2h = analysis?.context?.h2h?.note || "该项数据不足";
+  const odds = analysis?.market?.odds?.oneXTwo || {};
+  const oddsText =
+    hasValidOdds(odds) && odds.home && odds.draw && odds.away
+      ? `当前 1X2 为主胜 ${odds.home}、平局 ${odds.draw}、客胜 ${odds.away}。`
+      : "当前 1X2 赔率数据不足。";
+
+  return `一、比赛基本面分析
+主队近况积分/净胜球参考：${standing.home?.points ?? "该项数据不足"} / ${standing.home?.goalDiff ?? "该项数据不足"}；客队参考：${standing.away?.points ?? "该项数据不足"} / ${standing.away?.goalDiff ?? "该项数据不足"}。当前数据更适合做趋势判断，不宜只按排名下结论。
+
+二、近期状态分析
+主队近况：${standing.home?.record ?? "该项数据不足"}；客队近况：${standing.away?.record ?? "该项数据不足"}。如果只看胜平负，样本仍偏薄，需要结合对手强弱、射门质量和临场阵容再确认。
+
+三、主客场表现分析
+该项数据不足。现有接口未稳定提供主客场拆分胜率、主场/客场进失球和抗压指标。
+
+四、进攻能力分析
+xG 参考为主队 ${ad.xg?.home ?? "该项数据不足"}、客队 ${ad.xg?.away ?? "该项数据不足"}；射门参考为主队 ${ad.shots?.home ?? "该项数据不足"}、客队 ${ad.shots?.away ?? "该项数据不足"}。从模型输入看，${homeP >= awayP ? "主队" : "客队"}创造机会倾向略高。
+
+五、防守能力分析
+xGA 参考为主队 ${ad.xga?.home ?? "该项数据不足"}、客队 ${ad.xga?.away ?? "该项数据不足"}。门将状态、防守失误和定位球防守细节目前数据不足。
+
+六、伤停与首发阵容分析
+伤停和预测首发以官方赛前数据为准；若详情页未展示具体名单，则该项数据不足，不能假设核心球员一定出场。
+
+七、战术风格与克制关系分析
+${analysis?.context?.tactical?.matchup || "该项数据不足"} ${analysis?.context?.tactical?.conflictAnalysis || ""}
+
+八、赛程体能与战意分析
+体能指数参考：主队 ${analysis?.context?.environment?.fatigue?.home ?? "该项数据不足"}、客队 ${analysis?.context?.environment?.fatigue?.away ?? "该项数据不足"}。争冠、保级、杯赛轮换等战意信息目前需要赛前新闻补充。
+
+九、历史交锋分析
+${h2h} 历史交锋会受教练、阵容和赛季阶段变化影响，参考权重不宜过高。
+
+十、天气、场地与裁判因素
+天气：${analysis?.context?.environment?.weather || "该项数据不足"}。裁判出牌、点球倾向和场地质量数据不足。
+
+十一、赔率与盘口分析
+${oddsText} 亚洲盘口和大小球盘口数据不足，不能直接给盘口强结论；只能结合概率和进球模型做方向性判断。
+
+十二、综合判断与预测结论
+胜平负倾向：${homeP >= drawP && homeP >= awayP ? "主胜" : awayP >= homeP && awayP >= drawP ? "客胜" : "平局"}，信心等级：${analysis?.prediction?.conclusion?.confidence || "medium"}。
+让球方向：盘口数据不足，倾向参考 ${homeP >= awayP ? "主队方向" : "客队方向"}。
+大小球方向：基于进球模型倾向 ${Number((analysis?.prediction?.poissonLambda?.home || 0) + (analysis?.prediction?.poissonLambda?.away || 0)) >= 2.5 ? "大球" : "小球"}，但盘口数据不足。
+比分参考：${scores || analysis?.prediction?.conclusion?.predictedScore || "该项数据不足"}。
+风险点：临场首发变化、伤停更新、赔率临场波动、红牌点球等高随机事件。
+稳妥方向：优先参考胜平负概率中优势更明显的一侧，同时等待首发确认。
+激进方向：参考比分和大小球模型，但不夸大确定性。`;
+}
+
+function chooseDefaultAiModel(modelId = "") {
+  const requested = modelId ? AI_MODELS.find((x) => x.id === modelId && providerEnabled(x.provider)) : null;
+  if (requested) return requested;
+  return AI_MODELS.find((x) => providerEnabled(x.provider)) || null;
+}
+
+async function buildOrGetDailyAiPrediction(match, analysis, modelId = "") {
+  const dateKey = localDateKey();
+  const key = aiPredictionCacheKey(match?.id, dateKey);
+  const cached = aiPredictionCache.get(key);
+  if (cached?.text) return { ...cached, cached: true };
+
+  const model = chooseDefaultAiModel(modelId);
+  const systemPrompt =
+    "你是专业足球赛事赛前分析师。你必须用中文、结构化、客观输出；数据缺失时明确写“该项数据不足”，不得编造事实；不得承诺收益或提供投注入口。";
+  const prompt = buildMatchAiPredictionPrompt(match, analysis);
+
+  let entry;
+  if (model) {
+    try {
+      const result = await callAiProvider(model, { prompt, systemPrompt, maxTokens: 3600, temperature: 0.25 });
+      entry = {
+        matchId: match.id,
+        dateKey,
+        generatedAt: new Date().toISOString(),
+        providerConfigured: true,
+        provider: model.provider,
+        modelId: model.id,
+        modelName: model.name,
+        prompt,
+        text: result.text || fallbackAiPredictionText(match, analysis),
+        usage: result.raw?.usage || null,
+      };
+    } catch (error) {
+      entry = {
+        matchId: match.id,
+        dateKey,
+        generatedAt: new Date().toISOString(),
+        providerConfigured: false,
+        provider: "local-fallback",
+        modelId: model.id,
+        modelName: `${model.name} 调用失败，已使用本地结构化降级分析`,
+        prompt,
+        text: fallbackAiPredictionText(match, analysis),
+        usage: null,
+        error: String(error.message || error),
+      };
+    }
+  } else {
+    entry = {
+      matchId: match.id,
+      dateKey,
+      generatedAt: new Date().toISOString(),
+      providerConfigured: false,
+      provider: "local-fallback",
+      modelId: "",
+      modelName: "本地结构化降级分析",
+      prompt,
+      text: fallbackAiPredictionText(match, analysis),
+      usage: null,
+    };
+  }
+
+  aiPredictionCache.set(key, entry);
+  saveAiPredictionCache();
+  return { ...entry, cached: false };
 }
 
 function parseJsonBody(raw) {
@@ -1342,7 +1580,7 @@ function normalizeInjuryPlayer(item) {
   if (!item) return null;
   const injury = Number(item.injuryFlag || 0) === 1;
   const suspension = Number(item.suspensionFlag || 0) === 1;
-  const status = suspension ? "suspended" : injury ? "injured" : "available";
+  const status = suspension ? "停赛" : injury ? "伤病" : "可用";
   const reason = suspension ? "停赛" : injury ? "伤病" : "状态正常";
   return {
     player: normText(item.personName || item.playerName || "未知球员"),
@@ -2228,6 +2466,50 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (
+      (req.method === "GET" || req.method === "POST") &&
+      urlObj.pathname.startsWith("/api/matches/") &&
+      urlObj.pathname.endsWith("/ai-prediction")
+    ) {
+      const id = decodeURIComponent(urlObj.pathname.replace("/api/matches/", "").replace("/ai-prediction", ""));
+      const payload = req.method === "POST" ? parseJsonBody(bodyText) : {};
+      const fromCache = cache.matches.find((m) => m.id === id) || null;
+      let match = fromCache;
+      if (!match && db && selectLatestByIdStmt) {
+        const row = selectLatestByIdStmt.get(id);
+        if (row) match = mapDbSearchRow(row);
+      }
+
+      if (!match) {
+        json(res, 404, { ok: false, error: "match_not_found", id });
+        return;
+      }
+
+      let analysis = cache.analysisById[id] || buildAnalysisFromSporttery(match, {});
+      let enriched = enrichAnalysisForMatch(match, analysis);
+      if (normText(match.source) === "sporttery-webapi" && normText(match.sourceId)) {
+        const advPack = await fetchAdvancedMatchPack(match.sourceId);
+        enriched = applyAdvancedPackToAnalysis(match, enriched, advPack);
+      }
+      if (!isPreMatchStatus(match.status)) {
+        const archiveEntry =
+          getPredictionArchive(id) || tryLockPredictionArchive(match, enriched, cache.analysisById[id] || null, fromCache);
+        if (archiveEntry) enriched = mergeLockedForecastIntoAnalysis(enriched, archiveEntry);
+      }
+      cache.analysisById[id] = enriched;
+      if (!fromCache) {
+        cache.matches.push(match);
+      }
+
+      try {
+        const prediction = await buildOrGetDailyAiPrediction(match, enriched, payload.modelId || urlObj.searchParams.get("modelId") || "");
+        json(res, 200, { ok: true, id, prediction });
+      } catch (error) {
+        json(res, 400, { ok: false, id, error: String(error.message || error) });
+      }
+      return;
+    }
+
     if (req.method === "POST" && urlObj.pathname === "/api/ai/analyze") {
       const payload = parseJsonBody(bodyText);
       const modelId = payload.modelId || AI_MODELS[0].id;
@@ -2341,12 +2623,29 @@ const server = http.createServer(async (req, res) => {
 
 initDatabase();
 loadCache();
+loadAiPredictionCache();
 refreshAllData().catch(() => {});
 setInterval(() => {
   refreshAllData().catch(() => {});
 }, REFRESH_MINUTES * 60 * 1000);
 
+function hasLiveRefreshDemand() {
+  const now = Date.now();
+  const soonMs = 2 * 60 * 60 * 1000;
+  return cache.matches.some((match) => {
+    if (match?.status === "LIVE") return true;
+    const t = Date.parse(match?.datetime || "");
+    return Number.isFinite(t) && t >= now - 30 * 60 * 1000 && t <= now + soonMs;
+  });
+}
+
+setInterval(() => {
+  if (hasLiveRefreshDemand()) {
+    refreshAllData().catch(() => {});
+  }
+}, Math.max(15, LIVE_REFRESH_SECONDS) * 1000);
+
 server.listen(PORT, HOST, () => {
   console.log(`[football-analysis-web] running at http://${HOST}:${PORT}`);
-  console.log(`[football-analysis-web] source=${cache.source}, refresh=${REFRESH_MINUTES}m`);
+  console.log(`[football-analysis-web] source=${cache.source}, refresh=${REFRESH_MINUTES}m, live=${LIVE_REFRESH_SECONDS}s`);
 });
