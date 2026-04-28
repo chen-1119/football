@@ -11,6 +11,7 @@ const SPORTTERY_BASE = "https://webapi.sporttery.cn";
 const PUBLIC_DIR = __dirname;
 const CACHE_DIR = path.join(__dirname, "server-cache");
 const CACHE_FILE = path.join(CACHE_DIR, "snapshot.json");
+const SEED_CACHE_FILE = path.join(__dirname, "seed-snapshot.json");
 const AI_PREDICTION_CACHE_FILE = path.join(CACHE_DIR, "ai-predictions.json");
 const SNAPSHOT_HISTORY_DIR = path.join(CACHE_DIR, "history");
 const DB_FILE = path.join(CACHE_DIR, "matches.sqlite");
@@ -696,10 +697,18 @@ function computeNextRefreshAt(baseTime = Date.now()) {
 
 function loadCache() {
   ensureCacheDir();
-  if (!fs.existsSync(CACHE_FILE)) return;
+  const file = fs.existsSync(CACHE_FILE) ? CACHE_FILE : fs.existsSync(SEED_CACHE_FILE) ? SEED_CACHE_FILE : "";
+  if (!file) return;
   try {
-    const raw = fs.readFileSync(CACHE_FILE, "utf8");
-    const parsed = JSON.parse(raw);
+    const raw = fs.readFileSync(file, "utf8");
+    let parsed = JSON.parse(raw);
+    if (
+      parsed?.source &&
+      String(parsed.source).startsWith("fallback-mock") &&
+      fs.existsSync(SEED_CACHE_FILE)
+    ) {
+      parsed = JSON.parse(fs.readFileSync(SEED_CACHE_FILE, "utf8"));
+    }
     if (!parsed || typeof parsed !== "object") return;
     cache.updatedAt = parsed.updatedAt || null;
     cache.source = parsed.source || cache.source;
