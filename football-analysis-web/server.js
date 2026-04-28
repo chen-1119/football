@@ -16,10 +16,13 @@ const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CLOUD_SNAPSHOT_TABLE = process.env.CLOUD_SNAPSHOT_TABLE || "football_snapshots";
 const CLOUD_SNAPSHOT_ID = process.env.CLOUD_SNAPSHOT_ID || "latest";
+const ESPN_SOCCER_LEAGUES = (process.env.ESPN_SOCCER_LEAGUES ||
+  "eng.1,esp.1,ita.1,ger.1,fra.1,uefa.champions,uefa.europa,uefa.europa.conf").split(",").map((x) => x.trim()).filter(Boolean);
 const SPORTTERY_BASE = "https://webapi.sporttery.cn";
 const API_FOOTBALL_BASE = "https://v3.football.api-sports.io";
 const FOOTBALL_DATA_BASE = "https://api.football-data.org/v4";
 const THESPORTSDB_BASE = "https://www.thesportsdb.com";
+const ESPN_SCOREBOARD_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer";
 const PUBLIC_DIR = __dirname;
 const CACHE_DIR = path.join(__dirname, "server-cache");
 const CACHE_FILE = path.join(CACHE_DIR, "snapshot.json");
@@ -2138,7 +2141,92 @@ async function fetchMatchesFromTheSportsDb() {
   return dedupeMatches([...dayMatches, ...liveMatches]);
 }
 
+async function fetchEspnScoreboardJson(leagueCode) {
+  const response = await fetch(`${ESPN_SCOREBOARD_BASE}/${encodeURIComponent(leagueCode)}/scoreboard`, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0 football-analysis-web",
+    },
+  });
+  if (!response.ok) throw new Error(`espn_http_${leagueCode}_${response.status}`);
+  return response.json();
+}
+
+function espnStatusBucket(statusType) {
+  const state = String(statusType?.state || "").toLowerCase();
+  if (state === "in") return "LIVE";
+  if (state === "post" || statusType?.completed) return "RESULT";
+  return "WAIT";
+}
+
+function mapEspnEvent(event, leagueInfo, leagueCode) {
+  const competition = event?.competitions?.[0] || {};
+  const competitors = Array.isArray(competition.competitors) ? competition.competitors : [];
+  const home = competitors.find((x) => x.homeAway === "home") || competitors[0] || {};
+  const away = competitors.find((x) => x.homeAway === "away") || competitors[1] || {};
+  const statusType = competition.status?.type || event?.status?.type || {};
+  const status = espnStatusBucket(statusType);
+  const homeTeam = home.team || {};
+  const awayTeam = away.team || {};
+  return {
+    id: `espn-${event.id}`,
+    sourceId: String(event.id || ""),
+    source: "espn-scoreboard",
+    sourceMethod: leagueCode,
+    matchNumStr: event.id ? `ESPN-${event.id}` : "",
+    leagueCode: String(leagueInfo?.abbreviation || leagueCode || ""),
+    league: leagueInfo?.name || leagueInfo?.midsizeName || leagueCode || "Football",
+    competition: leagueInfo?.name || "Football",
+    round: event?.season?.slug || "",
+    datetime: competition.date || event.date || new Date().toISOString(),
+    venue: competition.venue?.fullName || "Venue not provided",
+    city: competition.venue?.address?.city || competition.venue?.address?.country || "",
+    status,
+    statusCode: statusType.name || statusType.state || status,
+    statusName: statusType.description || statusType.detail || status,
+    home: {
+      id: String(homeTeam.id || ""),
+      name: homeTeam.displayName || homeTeam.name || "Home",
+      short: toShortName(homeTeam.shortDisplayName || homeTeam.abbreviation || homeTeam.displayName || "Home"),
+      logo: homeTeam.logo || "",
+      color: homeTeam.color ? `#${String(homeTeam.color).replace(/^#/, "")}` : "#2B68FF",
+      rank: null,
+    },
+    away: {
+      id: String(awayTeam.id || ""),
+      name: awayTeam.displayName || awayTeam.name || "Away",
+      short: toShortName(awayTeam.shortDisplayName || awayTeam.abbreviation || awayTeam.displayName || "Away"),
+      logo: awayTeam.logo || "",
+      color: awayTeam.color ? `#${String(awayTeam.color).replace(/^#/, "")}` : "#F93A4A",
+      rank: null,
+    },
+    odds: { oneXTwo: sanitizeOdds({}) },
+    score: {
+      fullTime: {
+        home: toNum(home.score, null),
+        away: toNum(away.score, null),
+      },
+    },
+  };
+}
+
+async function fetchMatchesFromEspn() {
+  const settled = await Promise.allSettled(ESPN_SOCCER_LEAGUES.map((league) => fetchEspnScoreboardJson(league)));
+  const matches = [];
+  settled.forEach((result, idx) => {
+    if (result.status !== "fulfilled") return;
+    const payload = result.value || {};
+    const leagueInfo = Array.isArray(payload.leagues) ? payload.leagues[0] : null;
+    for (const event of payload.events || []) {
+      matches.push(mapEspnEvent(event, leagueInfo, ESPN_SOCCER_LEAGUES[idx]));
+    }
+  });
+  if (!matches.length) throw new Error("espn_empty_matches");
+  return dedupeMatches(matches);
+}
+
 function configuredProvider() {
+  if (DATA_PROVIDER === "espn" || DATA_PROVIDER === "espn-scoreboard") return "espn-scoreboard";
   if (DATA_PROVIDER === "thesportsdb" || DATA_PROVIDER === "sportsdb") return "thesportsdb";
   if (DATA_PROVIDER === "api-football" || DATA_PROVIDER === "apifootball") return "api-football";
   if (DATA_PROVIDER === "football-data" || DATA_PROVIDER === "footballdata") return "football-data";
@@ -2146,7 +2234,7 @@ function configuredProvider() {
   if (THESPORTSDB_KEY) return "thesportsdb";
   if (API_FOOTBALL_KEY) return "api-football";
   if (FOOTBALL_DATA_TOKEN) return "football-data";
-  return "sporttery";
+  return "espn-scoreboard";
 }
 
 async function fetchMatchDetail(sourceId, statusCode) {
@@ -2300,6 +2388,8 @@ async function refreshFromCloudFootballProvider(provider) {
     merged = await fetchMatchesFromFootballData();
   } else if (provider === "thesportsdb") {
     merged = await fetchMatchesFromTheSportsDb();
+  } else if (provider === "espn-scoreboard") {
+    merged = await fetchMatchesFromEspn();
   } else {
     merged = await fetchMatchesFromApiFootball();
   }
@@ -2751,6 +2841,7 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         source: cache.source,
         configuredProvider: configuredProvider(),
+        espnScoreboardEnabled: true,
         theSportsDbEnabled: Boolean(THESPORTSDB_KEY),
         apiFootballEnabled: Boolean(API_FOOTBALL_KEY),
         footballDataEnabled: Boolean(FOOTBALL_DATA_TOKEN),

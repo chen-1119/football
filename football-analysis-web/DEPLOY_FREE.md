@@ -19,6 +19,7 @@ HOST=0.0.0.0
 REFRESH_MINUTES=30
 LIVE_REFRESH_SECONDS=1800
 DATA_PROVIDER=auto
+ESPN_SOCCER_LEAGUES=eng.1,esp.1,ita.1,ger.1,fra.1,uefa.champions,uefa.europa,uefa.europa.conf
 THESPORTSDB_KEY=
 API_FOOTBALL_KEY=
 FOOTBALL_DATA_TOKEN=
@@ -36,11 +37,12 @@ DETAIL_ENRICH_LIMIT=60
 
 Use one of these free API keys on Render:
 
+- No-key fallback: ESPN public scoreboard JSON. This is enabled by default and does not require local sync or an API quota, but it is not an official contracted data API and coverage is mainly mainstream leagues.
 - Recommended free-first source: TheSportsDB. Set `THESPORTSDB_KEY`. It provides soccer day events and a livescore endpoint with a free key.
 - Strong structured live data: API-Football free plan. Set `API_FOOTBALL_KEY`. It supports fixtures, status, kickoff time, live minute/status and score fields. Keep `REFRESH_MINUTES=30` to stay within the free daily quota.
 - Backup: football-data.org free plan. Set `FOOTBALL_DATA_TOKEN`. It supports fixtures and delayed scores on the free plan, but true live scores require a paid tier.
 
-`DATA_PROVIDER=auto` chooses `THESPORTSDB_KEY` first, then `API_FOOTBALL_KEY`, then `FOOTBALL_DATA_TOKEN`, then Sporttery/local seed fallback.
+`DATA_PROVIDER=auto` chooses configured free keys first, otherwise it uses the ESPN no-key scoreboard fallback, then Sporttery/local seed fallback.
 
 ## Free Cloud Snapshot Storage
 

@@ -9,9 +9,10 @@ The app should update without a local computer and keep the latest snapshot afte
 1. Render Free hosts the web app.
 2. GitHub Actions wakes Render every 30 minutes by calling `/api/refresh`.
 3. Render fetches data from the configured free provider:
-   - `THESPORTSDB_KEY` first
-   - `API_FOOTBALL_KEY` second
-   - `FOOTBALL_DATA_TOKEN` third
+   - The ESPN public scoreboard JSON first when no key is configured
+   - `THESPORTSDB_KEY` when configured
+   - `API_FOOTBALL_KEY` when configured
+   - `FOOTBALL_DATA_TOKEN` when configured
    - Sporttery or bundled seed as final fallback
 4. Render writes the latest snapshot to Supabase Free.
 5. On startup, Render loads the Supabase snapshot before fetching new data.
@@ -52,6 +53,7 @@ The workflow `.github/workflows/refresh-render.yml` runs every 30 minutes and ca
 ## Provider Notes
 
 - TheSportsDB is the recommended free-first source for this project because it provides soccer day events and a livescore endpoint with a free key.
+- ESPN public scoreboard JSON is the no-key fallback. It is not an official contracted data API, so coverage and endpoint stability are weaker than paid/live data providers.
 - API-Football has stronger structured live fields, but the free quota is limited, so keep the refresh interval conservative.
 - football-data.org free data is useful for fixtures and delayed scores, but live scores require a paid tier.
 - Scraping arbitrary score websites should be a last resort because it is fragile and may violate site terms or be blocked by bot protection.
