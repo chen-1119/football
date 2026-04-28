@@ -3,6 +3,7 @@ services:
     name: football-analysis-web
     runtime: node
     plan: free
+    rootDir: football-analysis-web
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /api/status
