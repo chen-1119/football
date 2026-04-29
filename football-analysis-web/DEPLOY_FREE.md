@@ -97,7 +97,11 @@ Set this GitHub repository secret:
 
 ```env
 RENDER_REFRESH_URL=https://football-analysis-web.onrender.com/api/refresh
+RENDER_BASE_URL=https://football-analysis-web.onrender.com
+ADMIN_SYNC_TOKEN=copy_from_render_environment
 ```
+
+`RENDER_BASE_URL` and `ADMIN_SYNC_TOKEN` enable the GitHub Actions cloud worker to fetch the official Sporttery current match list and import it into Render. This keeps the app aligned with the Jingcai/Sporttery match pool without running anything locally.
 
 ## External Sync For Render
 

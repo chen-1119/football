@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node server.js",
-    "push:render": "node scripts/push-snapshot-to-render.js"
+    "push:render": "node scripts/push-snapshot-to-render.js",
+    "sync:sporttery-cloud": "node scripts/cloud-sync-sporttery.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0"

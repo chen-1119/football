@@ -10,8 +10,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  sync-sporttery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch Sporttery and import snapshot
+        env:
+          RENDER_BASE_URL: ${{ secrets.RENDER_BASE_URL }}
+          ADMIN_SYNC_TOKEN: ${{ secrets.ADMIN_SYNC_TOKEN }}
+        working-directory: football-analysis-web
+        run: |
+          if [ -z "$RENDER_BASE_URL" ] || [ -z "$ADMIN_SYNC_TOKEN" ]; then
+            echo "Set repository secrets RENDER_BASE_URL and ADMIN_SYNC_TOKEN to enable Sporttery cloud sync."
+            exit 0
+          fi
+          node scripts/cloud-sync-sporttery.js
+
   refresh:
     runs-on: ubuntu-latest
+    needs: sync-sporttery
+    if: always()
     steps:
       - name: Wake Render and start refresh
         env:
