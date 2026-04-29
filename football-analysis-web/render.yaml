@@ -33,6 +33,10 @@ services:
         value: latest
       - key: CLOUD_FIXTURE_WINDOW_DAYS
         value: 0
+      - key: TARGET_LEAGUE_CODES
+        value: 39,140,135,78,61
+      - key: TARGET_LEAGUE_NAMES
+        value: 英超,西甲,意甲,德甲,法甲
       - key: SPORTTERY_PAGE_SIZE
         value: 80
       - key: SPORTTERY_PAGE_DEPTH

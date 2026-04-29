@@ -61,6 +61,9 @@ const LEAGUE_NAME_ZH = new Map(
   ].map(([key, value]) => [key.toLowerCase(), value])
 );
 
+const TARGET_LEAGUE_CODES = new Set((process.env.TARGET_LEAGUE_CODES || "39,140,135,78,61").split(",").map((x) => x.trim()).filter(Boolean));
+const TARGET_LEAGUE_NAMES = new Set((process.env.TARGET_LEAGUE_NAMES || "英超,西甲,意甲,德甲,法甲").split(",").map((x) => x.trim()).filter(Boolean));
+
 const AI_PROVIDERS = [
   { id: "openai", name: "OpenAI", envKey: "OPENAI_API_KEY" },
   { id: "anthropic", name: "Anthropic", envKey: "ANTHROPIC_API_KEY" },
@@ -1236,6 +1239,22 @@ function zhLeagueName(name, fallback = "足球赛事") {
   return LEAGUE_NAME_ZH.get(raw.toLowerCase()) || raw;
 }
 
+function isTargetCompetition(match) {
+  if (!match) return false;
+  const code = normText(match.leagueCode);
+  const league = normText(match.league);
+  const competition = normText(match.competition);
+  return (
+    TARGET_LEAGUE_CODES.has(code) ||
+    TARGET_LEAGUE_NAMES.has(league) ||
+    TARGET_LEAGUE_NAMES.has(competition)
+  );
+}
+
+function filterTargetCompetitions(matches) {
+  return (Array.isArray(matches) ? matches : []).filter(isTargetCompetition);
+}
+
 function toNum(v, fallback = 0) {
   if (v === null || v === undefined || v === "") return fallback;
   const n = Number(v);
@@ -2006,7 +2025,7 @@ async function fetchMatchesFromApiFootball() {
   const payloads = await Promise.all(
     days.map((date) => fetchApiFootballJson(`/fixtures?date=${encodeURIComponent(date)}&timezone=Asia%2FShanghai`))
   );
-  return dedupeMatches(payloads.flatMap((payload) => (payload?.response || []).map(mapApiFootballFixture)));
+  return dedupeMatches(filterTargetCompetitions(payloads.flatMap((payload) => (payload?.response || []).map(mapApiFootballFixture))));
 }
 
 async function fetchFootballDataJson(pathname) {
@@ -2079,7 +2098,7 @@ async function fetchMatchesFromFootballData() {
   const from = formatDateOffset(-Math.max(0, Math.min(3, CLOUD_FIXTURE_WINDOW_DAYS)));
   const to = formatDateOffset(Math.max(0, Math.min(3, CLOUD_FIXTURE_WINDOW_DAYS)));
   const payload = await fetchFootballDataJson(`/matches?dateFrom=${encodeURIComponent(from)}&dateTo=${encodeURIComponent(to)}`);
-  return dedupeMatches((payload?.matches || []).map(mapFootballDataMatch));
+  return dedupeMatches(filterTargetCompetitions((payload?.matches || []).map(mapFootballDataMatch)));
 }
 
 async function fetchTheSportsDbJson(pathname) {
@@ -2168,7 +2187,7 @@ async function fetchMatchesFromTheSportsDb() {
   }
   const dayMatches = dayPayloads.flatMap((payload) => (payload?.events || []).map((row) => mapTheSportsDbEvent(row, "eventsday")));
   const liveMatches = (livePayload?.livescores || livePayload?.events || []).map((row) => mapTheSportsDbEvent(row, "livescore"));
-  return dedupeMatches([...dayMatches, ...liveMatches]);
+  return dedupeMatches(filterTargetCompetitions([...dayMatches, ...liveMatches]));
 }
 
 async function fetchEspnScoreboardJson(leagueCode) {
@@ -2252,8 +2271,9 @@ async function fetchMatchesFromEspn() {
       matches.push(mapEspnEvent(event, leagueInfo, ESPN_SOCCER_LEAGUES[idx]));
     }
   });
-  if (!matches.length) throw new Error("espn_empty_matches");
-  return dedupeMatches(matches);
+  const filtered = filterTargetCompetitions(matches);
+  if (!filtered.length) throw new Error("espn_empty_matches");
+  return dedupeMatches(filtered);
 }
 
 function configuredProvider() {
@@ -2368,7 +2388,7 @@ async function refreshFromSporttery() {
   const prevMatchesById = new Map((Array.isArray(cache.matches) ? cache.matches : []).map((m) => [m.id, m]));
 
   const lists = await Promise.all(SPORTTERY_METHODS.map((method) => fetchMatchListByMethod(method)));
-  const merged = dedupeMatches(lists.flat());
+  const merged = dedupeMatches(filterTargetCompetitions(lists.flat()));
   const news = await fetchChineseNews();
 
   const detailCandidates = merged
@@ -2674,7 +2694,7 @@ async function callAiProvider(modelConfig, { prompt, systemPrompt, maxTokens, te
 }
 
 function filterMatches({ league, status }) {
-  return cache.matches.filter((m) => {
+  return filterTargetCompetitions(cache.matches).filter((m) => {
     const leagueOk =
       !league || league === "全部" || league.toUpperCase() === "ALL" || m.league === league || m.leagueCode === league;
     const statusOk =
@@ -2827,13 +2847,14 @@ function enrichAnalysisForMatch(match, baseAnalysis) {
 }
 
 function buildCoveragePayload() {
-  const byStatus = cache.matches.reduce((acc, match) => {
+  const matches = filterTargetCompetitions(cache.matches);
+  const byStatus = matches.reduce((acc, match) => {
     const key = match.status || "UNKNOWN";
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
 
-  const byLeagueMap = cache.matches.reduce((acc, match) => {
+  const byLeagueMap = matches.reduce((acc, match) => {
     const key = match.league || "未分类联赛";
     acc.set(key, (acc.get(key) || 0) + 1);
     return acc;
@@ -2847,7 +2868,7 @@ function buildCoveragePayload() {
     ok: true,
     source: cache.source,
     updatedAt: cache.updatedAt,
-    totalMatches: cache.matches.length,
+    totalMatches: matches.length,
     totalLeagues: byLeague.length,
     byStatus,
     topLeagues: byLeague.slice(0, 20),
@@ -2883,14 +2904,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && urlObj.pathname === "/api/bootstrap") {
-      const leagues = ["全部", ...Array.from(new Set(cache.matches.map((m) => m.league)))];
+      const targetMatches = filterTargetCompetitions(cache.matches);
+      const leagues = ["全部", ...Array.from(new Set(targetMatches.map((m) => m.league)))];
       json(res, 200, {
         ok: true,
         source: cache.source,
         updatedAt: cache.updatedAt,
         scheduler: schedulerStatus(),
         leagues: leagues.map((name) => ({ code: name === "全部" ? "ALL" : name, name })),
-        matches: cache.matches,
+        matches: targetMatches,
         news: cache.news,
       });
       return;
