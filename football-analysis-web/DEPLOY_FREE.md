@@ -99,9 +99,28 @@ Set this GitHub repository secret:
 RENDER_REFRESH_URL=https://football-analysis-web.onrender.com/api/refresh
 RENDER_BASE_URL=https://football-analysis-web.onrender.com
 ADMIN_SYNC_TOKEN=copy_from_render_environment
+SPORTTERY_PROXY_URL=https://your-worker.your-subdomain.workers.dev/?token=your_proxy_token
 ```
 
 `RENDER_BASE_URL` and `ADMIN_SYNC_TOKEN` enable the GitHub Actions cloud worker to fetch the official Sporttery current match list and import it into Render. This keeps the app aligned with the Jingcai/Sporttery match pool without running anything locally.
+
+`SPORTTERY_PROXY_URL` is optional. Use it only if GitHub Actions cannot access Sporttery directly. A Cloudflare Worker template is included at `cloudflare/sporttery-proxy-worker.js`.
+
+## Optional Cloudflare Worker Proxy
+
+If both Render and GitHub Actions cannot access the official Sporttery endpoint, deploy the Worker in `cloudflare/sporttery-proxy-worker.js`:
+
+1. Create a free Cloudflare Worker.
+2. Paste the file contents into the Worker editor.
+3. Add a Worker variable named `SPORTTERY_PROXY_TOKEN`.
+4. Save and deploy.
+5. Add this GitHub Actions secret:
+
+```env
+SPORTTERY_PROXY_URL=https://your-worker.your-subdomain.workers.dev/?token=your_proxy_token
+```
+
+The sync workflow tries the official endpoint first, then `SPORTTERY_SOURCE_URLS`, then `SPORTTERY_PROXY_URL`.
 
 ## External Sync For Render
 

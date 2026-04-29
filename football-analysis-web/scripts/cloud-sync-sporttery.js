@@ -2,6 +2,14 @@ const SPORTTERY_URL = "https://webapi.sporttery.cn/gateway/uniform/football/getM
 
 const targetBase = process.env.RENDER_BASE_URL || "";
 const token = process.env.ADMIN_SYNC_TOKEN || "";
+const sourceUrls = [
+  SPORTTERY_URL,
+  ...(process.env.SPORTTERY_SOURCE_URLS || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean),
+  process.env.SPORTTERY_PROXY_URL || "",
+].filter(Boolean);
 
 function normText(value, fallback = "") {
   if (value === null || value === undefined) return fallback;
@@ -69,6 +77,35 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
+function sportteryHeaders() {
+  return {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+    Referer: "https://m.sporttery.cn/mjc/zqsj/",
+    Origin: "https://m.sporttery.cn",
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+  };
+}
+
+async function fetchSportteryPayload() {
+  const errors = [];
+  for (const url of sourceUrls) {
+    try {
+      const payload = await fetchJson(url, { headers: sportteryHeaders() });
+      const count = payload?.value?.totalCount || payload?.value?.matchInfoList?.reduce((sum, day) => sum + (day.subMatchList?.length || 0), 0) || 0;
+      if (count > 0) {
+        console.log(`Sporttery source ok: ${url} (${count} matches)`);
+        return { payload, sourceUrl: url };
+      }
+      errors.push(`${url} -> empty`);
+    } catch (error) {
+      errors.push(`${url} -> ${error.message || error}`);
+    }
+  }
+  throw new Error(`All Sporttery sources failed: ${errors.join(" | ")}`);
+}
+
 function mapSportteryMatch(row) {
   return {
     id: `sporttery-${row.matchId}`,
@@ -118,20 +155,12 @@ async function main() {
   if (!targetBase || !/^https?:\/\//.test(targetBase)) throw new Error("Set RENDER_BASE_URL.");
   if (!token) throw new Error("Set ADMIN_SYNC_TOKEN.");
 
-  const payload = await fetchJson(SPORTTERY_URL, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
-      Referer: "https://m.sporttery.cn/mjc/zqsj/",
-      Origin: "https://m.sporttery.cn",
-      Accept: "application/json, text/plain, */*",
-      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    },
-  });
+  const { payload, sourceUrl } = await fetchSportteryPayload();
   const matches = flatten(payload);
   if (!matches.length) throw new Error("Sporttery returned no matches.");
 
   const snapshot = {
-    source: "sporttery-cloud-sync",
+    source: sourceUrl === SPORTTERY_URL ? "sporttery-cloud-sync" : "sporttery-cloud-sync-proxy",
     updatedAt: new Date().toISOString(),
     matches,
     analysisById: {},

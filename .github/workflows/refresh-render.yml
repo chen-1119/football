@@ -21,6 +21,8 @@ jobs:
         env:
           RENDER_BASE_URL: ${{ secrets.RENDER_BASE_URL }}
           ADMIN_SYNC_TOKEN: ${{ secrets.ADMIN_SYNC_TOKEN }}
+          SPORTTERY_SOURCE_URLS: ${{ secrets.SPORTTERY_SOURCE_URLS }}
+          SPORTTERY_PROXY_URL: ${{ secrets.SPORTTERY_PROXY_URL }}
         working-directory: football-analysis-web
         run: |
           if [ -z "$RENDER_BASE_URL" ] || [ -z "$ADMIN_SYNC_TOKEN" ]; then
