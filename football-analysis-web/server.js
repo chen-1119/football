@@ -1208,6 +1208,11 @@ function parseJsonBody(raw) {
 
 function toStatusBucket(matchStatusCode) {
   const code = String(matchStatusCode || "");
+  const normalized = code.toLowerCase();
+  if (["selling", "sold", "onsale"].includes(normalized)) return "SELL";
+  if (["define", "defined", "presale", "oddsin"].includes(normalized)) return "WAIT";
+  if (["playing", "live", "inplay", "firsthalf", "secondhalf"].includes(normalized)) return "LIVE";
+  if (["finished", "result", "ended", "completed"].includes(normalized)) return "RESULT";
   if (["2", "3"].includes(code)) return "SELL";
   if (["4", "5", "6", "7", "8", "9"].includes(code)) return "LIVE";
   if (["10", "11", "12", "13"].includes(code)) return "RESULT";
@@ -1638,6 +1643,8 @@ async function fetchSportteryJson(pathname, tab = "concern") {
       Referer: `https://m.sporttery.cn/mjc/zqsj/?tab=${tab}`,
       Origin: "https://m.sporttery.cn",
       Accept: "application/json, text/plain, */*",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "Cache-Control": "no-cache",
     },
   });
   if (!response.ok) {
@@ -1892,6 +1899,12 @@ function buildMatchListPath(method, pageNo = null, pageType = null) {
   return `/gateway/uniform/fb/getMatchDataPageListV1.qry?${params.toString()}`;
 }
 
+function sportteryOddsFromList(oddsList, poolCode = "HAD") {
+  const rows = Array.isArray(oddsList) ? oddsList : [];
+  const row = rows.find((item) => String(item?.poolCode || "").toUpperCase() === poolCode) || rows.find((item) => item?.h || item?.d || item?.a) || {};
+  return sanitizeOdds({ home: row.h, draw: row.d, away: row.a });
+}
+
 function flattenMatchesFromPayload(payload, method) {
   const days = payload.value?.matchInfoList || [];
   const list = [];
@@ -1942,6 +1955,61 @@ function flattenMatchesFromPayload(payload, method) {
     }
   }
   return list;
+}
+
+function flattenCurrentMatchesFromPayload(payload) {
+  const days = payload.value?.matchInfoList || [];
+  const list = [];
+  for (const day of days) {
+    for (const m of day.subMatchList || []) {
+      const sectionScore = scoreFromSections(m.sectionsNo999 || m.sectionsNo1);
+      const id = `sporttery-${m.matchId}`;
+      list.push({
+        id,
+        sourceId: String(m.matchId),
+        source: "sporttery-webapi",
+        sourceMethod: "current",
+        matchNumStr: m.matchNumStr || "",
+        leagueCode: String(m.leagueId || ""),
+        league: m.leagueAbbName || m.leagueAllName || "未知联赛",
+        competition: m.leagueAllName || m.leagueAbbName || "足球赛事",
+        round: m.matchNumStr || "",
+        datetime: parseDateTime(m.matchDate, m.matchTime),
+        venue: "官方未提供",
+        city: "",
+        status: toStatusBucket(m.sellStatus || m.matchStatus),
+        statusCode: String(m.sellStatus || m.matchStatus || ""),
+        statusName: m.matchStatus === "Selling" || String(m.sellStatus || "") === "2" ? "已开售" : m.matchStatus === "Define" ? "待开售" : m.matchStatus || "",
+        home: {
+          id: String(m.homeTeamId || ""),
+          name: m.homeTeamAllName || m.homeTeamAbbName || "主队",
+          short: toShortName(m.homeTeamAbbName || m.homeTeamAllName || "主队"),
+          color: "#2B68FF",
+          rank: null,
+        },
+        away: {
+          id: String(m.awayTeamId || ""),
+          name: m.awayTeamAllName || m.awayTeamAbbName || "客队",
+          short: toShortName(m.awayTeamAbbName || m.awayTeamAllName || "客队"),
+          color: "#F93A4A",
+          rank: null,
+        },
+        odds: { oneXTwo: sportteryOddsFromList(m.oddsList, "HAD") },
+        score: {
+          fullTime: {
+            home: toNum(m.homeScore, sectionScore.home),
+            away: toNum(m.awayScore, sectionScore.away),
+          },
+        },
+      });
+    }
+  }
+  return list;
+}
+
+async function fetchSportteryCurrentMatches() {
+  const payload = await fetchSportteryJson("/gateway/uniform/football/getMatchListV1.qry?clientCode=3001", "concern");
+  return flattenCurrentMatchesFromPayload(payload);
 }
 
 async function fetchMatchListByMethod(method) {
@@ -2413,8 +2481,15 @@ async function refreshFromSporttery() {
   const prevAnalysisById = cache.analysisById && typeof cache.analysisById === "object" ? cache.analysisById : {};
   const prevMatchesById = new Map((Array.isArray(cache.matches) ? cache.matches : []).map((m) => [m.id, m]));
 
-  const lists = await Promise.all(SPORTTERY_METHODS.map((method) => fetchMatchListByMethod(method)));
-  const merged = dedupeMatches(filterTargetCompetitions(lists.flat()));
+  let currentMatches = [];
+  try {
+    currentMatches = await fetchSportteryCurrentMatches();
+  } catch {
+    currentMatches = [];
+  }
+  const lists = currentMatches.length ? [currentMatches] : await Promise.all(SPORTTERY_METHODS.map((method) => fetchMatchListByMethod(method)));
+  const historicalMatches = SPORTTERY_COMPATIBLE_MODE ? (Array.isArray(cache.matches) ? cache.matches.filter((m) => isSportteryMatch(m) && m.status === "RESULT") : []) : [];
+  const merged = dedupeMatches(filterTargetCompetitions([...historicalMatches, ...lists.flat()]));
   const news = await fetchChineseNews();
 
   const detailCandidates = merged
