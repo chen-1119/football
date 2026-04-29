@@ -9,6 +9,7 @@ const REFRESH_MINUTES = Number(process.env.REFRESH_MINUTES || 5);
 const LIVE_REFRESH_SECONDS = Number(process.env.LIVE_REFRESH_SECONDS || 60);
 const ADMIN_SYNC_TOKEN = process.env.ADMIN_SYNC_TOKEN || "";
 const DATA_PROVIDER = String(process.env.DATA_PROVIDER || "auto").trim().toLowerCase();
+const DATA_CONTENT_MODE = String(process.env.DATA_CONTENT_MODE || "sporttery-compatible").trim().toLowerCase();
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY || "";
 const FOOTBALL_DATA_TOKEN = process.env.FOOTBALL_DATA_TOKEN || "";
 const THESPORTSDB_KEY = process.env.THESPORTSDB_KEY || "";
@@ -63,6 +64,7 @@ const LEAGUE_NAME_ZH = new Map(
 
 const TARGET_LEAGUE_CODES = new Set((process.env.TARGET_LEAGUE_CODES || "39,140,135,78,61").split(",").map((x) => x.trim()).filter(Boolean));
 const TARGET_LEAGUE_NAMES = new Set((process.env.TARGET_LEAGUE_NAMES || "英超,西甲,意甲,德甲,法甲").split(",").map((x) => x.trim()).filter(Boolean));
+const SPORTTERY_COMPATIBLE_MODE = DATA_CONTENT_MODE !== "provider-only";
 
 const AI_PROVIDERS = [
   { id: "openai", name: "OpenAI", envKey: "OPENAI_API_KEY" },
@@ -744,11 +746,11 @@ function loadCache() {
     const raw = fs.readFileSync(file, "utf8");
     let parsed = JSON.parse(raw);
     if (
-      parsed?.source &&
-      String(parsed.source).startsWith("fallback-mock") &&
+      ((parsed?.source && String(parsed.source).startsWith("fallback-mock")) ||
+        (SPORTTERY_COMPATIBLE_MODE && !isSportterySnapshot(parsed))) &&
       fs.existsSync(SEED_CACHE_FILE)
     ) {
-      parsed = JSON.parse(fs.readFileSync(SEED_CACHE_FILE, "utf8"));
+      parsed = loadSeedSnapshotPayload() || parsed;
     }
     if (!parsed || typeof parsed !== "object") return;
     cache.updatedAt = parsed.updatedAt || null;
@@ -1241,6 +1243,7 @@ function zhLeagueName(name, fallback = "足球赛事") {
 
 function isTargetCompetition(match) {
   if (!match) return false;
+  if (SPORTTERY_COMPATIBLE_MODE && isSportteryMatch(match)) return true;
   const code = normText(match.leagueCode);
   const league = normText(match.league);
   const competition = normText(match.competition);
@@ -1253,6 +1256,28 @@ function isTargetCompetition(match) {
 
 function filterTargetCompetitions(matches) {
   return (Array.isArray(matches) ? matches : []).filter(isTargetCompetition);
+}
+
+function isSportteryMatch(match) {
+  return String(match?.source || "").startsWith("sporttery") || String(match?.id || "").startsWith("sporttery-");
+}
+
+function isSportterySnapshot(payload) {
+  return (
+    payload &&
+    Array.isArray(payload.matches) &&
+    payload.matches.some(isSportteryMatch)
+  );
+}
+
+function loadSeedSnapshotPayload() {
+  if (!fs.existsSync(SEED_CACHE_FILE)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SEED_CACHE_FILE, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function toNum(v, fallback = 0) {
@@ -2277,6 +2302,7 @@ async function fetchMatchesFromEspn() {
 }
 
 function configuredProvider() {
+  if (SPORTTERY_COMPATIBLE_MODE && isSportterySnapshot(cache)) return "sporttery";
   if (DATA_PROVIDER === "espn" || DATA_PROVIDER === "espn-scoreboard") return "espn-scoreboard";
   if (DATA_PROVIDER === "thesportsdb" || DATA_PROVIDER === "sportsdb") return "thesportsdb";
   if (DATA_PROVIDER === "api-football" || DATA_PROVIDER === "apifootball") return "api-football";
@@ -2892,6 +2918,7 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, {
         ok: true,
         source: cache.source,
+        contentMode: DATA_CONTENT_MODE,
         configuredProvider: configuredProvider(),
         espnScoreboardEnabled: true,
         theSportsDbEnabled: Boolean(THESPORTSDB_KEY),
@@ -3197,7 +3224,9 @@ loadAiPredictionCache();
 loadCloudSnapshot()
   .then((payload) => {
     if (payload && Array.isArray(payload.matches) && payload.matches.length) {
-      importSnapshotPayload(payload);
+      if (!SPORTTERY_COMPATIBLE_MODE || isSportterySnapshot(payload) || !isSportterySnapshot(cache)) {
+        importSnapshotPayload(payload);
+      }
     }
   })
   .catch((error) => {

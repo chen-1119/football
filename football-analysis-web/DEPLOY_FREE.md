@@ -19,6 +19,7 @@ HOST=0.0.0.0
 REFRESH_MINUTES=30
 LIVE_REFRESH_SECONDS=1800
 DATA_PROVIDER=auto
+DATA_CONTENT_MODE=sporttery-compatible
 ESPN_SOCCER_LEAGUES=eng.1,esp.1,ita.1,ger.1,fra.1,uefa.champions,uefa.europa,uefa.europa.conf
 THESPORTSDB_KEY=
 API_FOOTBALL_KEY=
@@ -44,7 +45,9 @@ Use one of these free API keys on Render:
 - Strong structured live data: API-Football free plan. Set `API_FOOTBALL_KEY`. It supports fixtures, status, kickoff time, live minute/status and score fields. Keep `REFRESH_MINUTES=30` to stay within the free daily quota.
 - Backup: football-data.org free plan. Set `FOOTBALL_DATA_TOKEN`. It supports fixtures and delayed scores on the free plan, but true live scores require a paid tier.
 
-`DATA_PROVIDER=auto` chooses API-Football first when `API_FOOTBALL_KEY` is configured, then TheSportsDB, then football-data.org, then the ESPN no-key scoreboard fallback, then Sporttery/local seed fallback.
+`DATA_CONTENT_MODE=sporttery-compatible` keeps the Sporttery/Jingcai match pool as the canonical content. Cloud APIs are fallback sources only and should not replace the Sporttery-style match list.
+
+`DATA_PROVIDER=auto` chooses Sporttery first in compatible mode. If no Sporttery snapshot exists, it falls back to API-Football, then TheSportsDB, then football-data.org, then the ESPN no-key scoreboard fallback.
 
 ## Free Cloud Snapshot Storage
 

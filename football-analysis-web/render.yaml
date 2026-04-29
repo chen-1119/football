@@ -15,6 +15,8 @@ services:
         value: 1800
       - key: DATA_PROVIDER
         value: auto
+      - key: DATA_CONTENT_MODE
+        value: sporttery-compatible
       - key: ESPN_SOCCER_LEAGUES
         value: eng.1,esp.1,ita.1,ger.1,fra.1,uefa.champions,uefa.europa,uefa.europa.conf
       - key: THESPORTSDB_KEY
