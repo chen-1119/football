@@ -9,10 +9,10 @@ The app should update without a local computer and keep the latest snapshot afte
 1. Render Free hosts the web app.
 2. GitHub Actions wakes Render every 30 minutes by calling `/api/refresh`.
 3. Render fetches data from the configured free provider:
-   - The ESPN public scoreboard JSON first when no key is configured
-   - `THESPORTSDB_KEY` when configured
    - `API_FOOTBALL_KEY` when configured
+   - `THESPORTSDB_KEY` when configured
    - `FOOTBALL_DATA_TOKEN` when configured
+   - The ESPN public scoreboard JSON when no key is configured
    - Sporttery or bundled seed as final fallback
 4. Render writes the latest snapshot to Supabase Free.
 5. On startup, Render loads the Supabase snapshot before fetching new data.

@@ -39,6 +39,28 @@ const DETAIL_ENRICH_LIMIT = Number(process.env.DETAIL_ENRICH_LIMIT || 60);
 const FX_USD_CNY = Number(process.env.FX_USD_CNY || 7.2);
 const CLOUD_FIXTURE_WINDOW_DAYS = Number(process.env.CLOUD_FIXTURE_WINDOW_DAYS || 1);
 
+const LEAGUE_NAME_ZH = new Map(
+  [
+    ["English Premier League", "英超"],
+    ["Premier League", "英超"],
+    ["Spanish LALIGA", "西甲"],
+    ["La Liga", "西甲"],
+    ["Italian Serie A", "意甲"],
+    ["Serie A", "意甲"],
+    ["German Bundesliga", "德甲"],
+    ["Bundesliga", "德甲"],
+    ["French Ligue 1", "法甲"],
+    ["Ligue 1", "法甲"],
+    ["UEFA Champions League", "欧冠"],
+    ["UEFA Europa League", "欧联"],
+    ["UEFA Conference League", "欧协联"],
+    ["English League 1", "英甲"],
+    ["Portuguese Primeira Liga", "葡超"],
+    ["Germany Women Bundesliga", "德国女足联赛"],
+    ["Slovenian 2 SNL", "斯洛文尼亚乙级联赛"],
+  ].map(([key, value]) => [key.toLowerCase(), value])
+);
+
 const AI_PROVIDERS = [
   { id: "openai", name: "OpenAI", envKey: "OPENAI_API_KEY" },
   { id: "anthropic", name: "Anthropic", envKey: "ANTHROPIC_API_KEY" },
@@ -1209,6 +1231,11 @@ function toShortName(name) {
   return name.slice(0, 3).toUpperCase();
 }
 
+function zhLeagueName(name, fallback = "足球赛事") {
+  const raw = normText(name, fallback);
+  return LEAGUE_NAME_ZH.get(raw.toLowerCase()) || raw;
+}
+
 function toNum(v, fallback = 0) {
   if (v === null || v === undefined || v === "") return fallback;
   const n = Number(v);
@@ -1934,6 +1961,7 @@ function mapApiFootballFixture(row) {
   const status = apiFootballStatusBucket(statusCode);
   const homeScore = toNum(score.fulltime?.home, toNum(goals.home, null));
   const awayScore = toNum(score.fulltime?.away, toNum(goals.away, null));
+  const leagueName = zhLeagueName(league.name, "足球赛事");
   return {
     id,
     sourceId: String(fixture.id || ""),
@@ -1941,27 +1969,27 @@ function mapApiFootballFixture(row) {
     sourceMethod: "fixtures",
     matchNumStr: fixture.id ? `AF-${fixture.id}` : "",
     leagueCode: String(league.id || ""),
-    league: league.name || "Unknown League",
-    competition: league.name || "Football",
+    league: leagueName,
+    competition: leagueName,
     round: league.round || "",
     datetime: fixture.date || new Date().toISOString(),
-    venue: fixture.venue?.name || "Venue not provided",
+    venue: fixture.venue?.name || "官方暂未提供",
     city: fixture.venue?.city || "",
     status,
     statusCode,
     statusName: fixture.status?.long || statusCode,
     home: {
       id: String(teams.home?.id || ""),
-      name: teams.home?.name || "Home",
-      short: toShortName(teams.home?.name || "Home"),
+      name: teams.home?.name || "主队",
+      short: toShortName(teams.home?.name || "主队"),
       logo: teams.home?.logo || "",
       color: "#2B68FF",
       rank: null,
     },
     away: {
       id: String(teams.away?.id || ""),
-      name: teams.away?.name || "Away",
-      short: toShortName(teams.away?.name || "Away"),
+      name: teams.away?.name || "客队",
+      short: toShortName(teams.away?.name || "客队"),
       logo: teams.away?.logo || "",
       color: "#F93A4A",
       rank: null,
@@ -2004,6 +2032,7 @@ function mapFootballDataMatch(row) {
   const id = `football-data-${row.id}`;
   const statusCode = String(row.status || "");
   const status = footballDataStatusBucket(statusCode);
+  const leagueName = zhLeagueName(row.competition?.name, "足球赛事");
   return {
     id,
     sourceId: String(row.id || ""),
@@ -2011,27 +2040,27 @@ function mapFootballDataMatch(row) {
     sourceMethod: "matches",
     matchNumStr: row.id ? `FD-${row.id}` : "",
     leagueCode: row.competition?.code || String(row.competition?.id || ""),
-    league: row.competition?.name || "Unknown League",
-    competition: row.competition?.name || "Football",
+    league: leagueName,
+    competition: leagueName,
     round: row.stage || row.group || "",
     datetime: row.utcDate || new Date().toISOString(),
-    venue: row.venue || "Venue not provided",
+    venue: row.venue || "官方暂未提供",
     city: "",
     status,
     statusCode,
     statusName: statusCode,
     home: {
       id: String(row.homeTeam?.id || ""),
-      name: row.homeTeam?.name || "Home",
-      short: toShortName(row.homeTeam?.shortName || row.homeTeam?.tla || row.homeTeam?.name || "Home"),
+      name: row.homeTeam?.name || "主队",
+      short: toShortName(row.homeTeam?.shortName || row.homeTeam?.tla || row.homeTeam?.name || "主队"),
       crest: row.homeTeam?.crest || "",
       color: "#2B68FF",
       rank: null,
     },
     away: {
       id: String(row.awayTeam?.id || ""),
-      name: row.awayTeam?.name || "Away",
-      short: toShortName(row.awayTeam?.shortName || row.awayTeam?.tla || row.awayTeam?.name || "Away"),
+      name: row.awayTeam?.name || "客队",
+      short: toShortName(row.awayTeam?.shortName || row.awayTeam?.tla || row.awayTeam?.name || "客队"),
       crest: row.awayTeam?.crest || "",
       color: "#F93A4A",
       rank: null,
@@ -2081,6 +2110,7 @@ function mapTheSportsDbEvent(row, sourceMethod = "eventsday") {
   const time = row?.strTimeLocal || row?.strTime || "00:00:00";
   const timestamp = row?.strTimestamp || (String(date).includes("T") ? date : parseDateTime(date, String(time).slice(0, 5)));
   const status = theSportsDbStatusBucket(row);
+  const leagueName = zhLeagueName(row?.strLeague, "足球赛事");
   return {
     id: `thesportsdb-${eventId}`,
     sourceId: String(eventId || ""),
@@ -2088,11 +2118,11 @@ function mapTheSportsDbEvent(row, sourceMethod = "eventsday") {
     sourceMethod,
     matchNumStr: eventId ? `TSDB-${eventId}` : "",
     leagueCode: String(row?.idLeague || ""),
-    league: row?.strLeague || "Football",
-    competition: row?.strLeague || "Football",
+    league: leagueName,
+    competition: leagueName,
     round: row?.intRound ? `Round ${row.intRound}` : "",
     datetime: timestamp,
-    venue: row?.strVenue || "Venue not provided",
+    venue: row?.strVenue || "官方暂未提供",
     city: row?.strCountry || "",
     status,
     statusCode: row?.strProgress || row?.strStatus || status,
@@ -2168,6 +2198,7 @@ function mapEspnEvent(event, leagueInfo, leagueCode) {
   const status = espnStatusBucket(statusType);
   const homeTeam = home.team || {};
   const awayTeam = away.team || {};
+  const leagueName = zhLeagueName(leagueInfo?.name || leagueInfo?.midsizeName || leagueCode, "足球赛事");
   return {
     id: `espn-${event.id}`,
     sourceId: String(event.id || ""),
@@ -2175,11 +2206,11 @@ function mapEspnEvent(event, leagueInfo, leagueCode) {
     sourceMethod: leagueCode,
     matchNumStr: event.id ? `ESPN-${event.id}` : "",
     leagueCode: String(leagueInfo?.abbreviation || leagueCode || ""),
-    league: leagueInfo?.name || leagueInfo?.midsizeName || leagueCode || "Football",
-    competition: leagueInfo?.name || "Football",
+    league: leagueName,
+    competition: leagueName,
     round: event?.season?.slug || "",
     datetime: competition.date || event.date || new Date().toISOString(),
-    venue: competition.venue?.fullName || "Venue not provided",
+    venue: competition.venue?.fullName || "官方暂未提供",
     city: competition.venue?.address?.city || competition.venue?.address?.country || "",
     status,
     statusCode: statusType.name || statusType.state || status,
@@ -2231,8 +2262,8 @@ function configuredProvider() {
   if (DATA_PROVIDER === "api-football" || DATA_PROVIDER === "apifootball") return "api-football";
   if (DATA_PROVIDER === "football-data" || DATA_PROVIDER === "footballdata") return "football-data";
   if (DATA_PROVIDER === "sporttery") return "sporttery";
-  if (THESPORTSDB_KEY) return "thesportsdb";
   if (API_FOOTBALL_KEY) return "api-football";
+  if (THESPORTSDB_KEY) return "thesportsdb";
   if (FOOTBALL_DATA_TOKEN) return "football-data";
   return "espn-scoreboard";
 }

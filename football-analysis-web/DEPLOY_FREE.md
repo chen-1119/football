@@ -27,7 +27,7 @@ SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
 CLOUD_SNAPSHOT_TABLE=football_snapshots
 CLOUD_SNAPSHOT_ID=latest
-CLOUD_FIXTURE_WINDOW_DAYS=1
+CLOUD_FIXTURE_WINDOW_DAYS=0
 SPORTTERY_PAGE_SIZE=80
 SPORTTERY_PAGE_DEPTH=16
 DETAIL_ENRICH_LIMIT=60
@@ -42,7 +42,7 @@ Use one of these free API keys on Render:
 - Strong structured live data: API-Football free plan. Set `API_FOOTBALL_KEY`. It supports fixtures, status, kickoff time, live minute/status and score fields. Keep `REFRESH_MINUTES=30` to stay within the free daily quota.
 - Backup: football-data.org free plan. Set `FOOTBALL_DATA_TOKEN`. It supports fixtures and delayed scores on the free plan, but true live scores require a paid tier.
 
-`DATA_PROVIDER=auto` chooses configured free keys first, otherwise it uses the ESPN no-key scoreboard fallback, then Sporttery/local seed fallback.
+`DATA_PROVIDER=auto` chooses API-Football first when `API_FOOTBALL_KEY` is configured, then TheSportsDB, then football-data.org, then the ESPN no-key scoreboard fallback, then Sporttery/local seed fallback.
 
 ## Free Cloud Snapshot Storage
 

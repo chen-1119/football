@@ -32,7 +32,7 @@ services:
       - key: CLOUD_SNAPSHOT_ID
         value: latest
       - key: CLOUD_FIXTURE_WINDOW_DAYS
-        value: 1
+        value: 0
       - key: SPORTTERY_PAGE_SIZE
         value: 80
       - key: SPORTTERY_PAGE_DEPTH
